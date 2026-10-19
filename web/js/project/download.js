@@ -21,13 +21,17 @@ export async function downloadFile(file) {
       url: file.url, name: file.name, mime: contentType(file),
     });
   }
+  // Blob URLs avoid browser-specific data-URL download limits for generated images.
+  const generated = file.url.startsWith('data:image/');
+  const localUrl = generated ? URL.createObjectURL(await (await fetch(file.url)).blob()) : null;
   const link = document.createElement('a');
-  link.href = file.url;
+  link.href = localUrl || file.url;
   link.download = file.name;
   link.rel = 'noopener noreferrer';
   document.body.appendChild(link);
   link.click();
   link.remove();
+  if (localUrl) setTimeout(() => URL.revokeObjectURL(localUrl), 1000);
   return { status: 'started' };
 }
 

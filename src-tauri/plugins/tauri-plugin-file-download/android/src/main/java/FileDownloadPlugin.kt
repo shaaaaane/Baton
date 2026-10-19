@@ -5,12 +5,14 @@ import android.app.Activity
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.ClipData
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import app.tauri.PermissionState
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -33,6 +35,8 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
   private data class PendingDownload(val id: Long, val name: String, val mime: String, val invoke: Invoke)
 
   private var pending: PendingDownload? = null
+  private var savingImage = false
+  @Volatile private var destroyed = false
   private var foreground = true
   private var receiverRegistered = false
   private val receiver = object : BroadcastReceiver() {
@@ -44,6 +48,12 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun download(invoke: Invoke) {
+    val isImage = try { invoke.parseArgs(DownloadArgs::class.java).url.startsWith("data:") }
+      catch (_: Exception) { false }
+    if (isImage) {
+      enqueue(invoke)
+      return
+    }
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
       requestPermissionForAlias("legacyStorage", invoke, "storagePermissionCallback")
       return
@@ -65,6 +75,7 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   override fun onDestroy() {
+    destroyed = true
     pending?.invoke?.reject("Download continues in system Downloads. Open the file there when it finishes.")
     clearPendingDownload()
   }
@@ -106,12 +117,19 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   private fun enqueue(invoke: Invoke) = activity.runOnUiThread {
-    if (pending != null) {
+    if (pending != null || savingImage) {
       invoke.reject("A download is already in progress")
       return@runOnUiThread
     }
     try {
       val args = invoke.parseArgs(DownloadArgs::class.java)
+      if (args.url.startsWith("data:")) {
+        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+          "Saving generated images requires Android 10 or newer"
+        }
+        saveImage(invoke, args)
+        return@runOnUiThread
+      }
       val uri = Uri.parse(args.url)
       require(uri.scheme == "https" && uri.host != null && uri.userInfo == null) { "Downloads require an HTTPS URL" }
       val name = args.name.replace('\\', '/').substringAfterLast('/').replace(Regex("[\\p{Cntrl}<>:\"|?*]"), "_").trim(' ', '.')
@@ -136,6 +154,56 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
     } catch (error: Exception) {
       clearPendingDownload()
       invoke.reject(error.message ?: "Download failed")
+    }
+  }
+
+  private fun saveImage(invoke: Invoke, args: DownloadArgs) {
+    savingImage = true
+    val resolver = activity.applicationContext.contentResolver
+    try {
+      Thread({
+        var uri: Uri? = null
+        var failure: String? = null
+        var savedName = ""
+        try {
+          val image = LocalImageData.decode(args.url)
+          savedName = args.name.replace('\\', '/').substringAfterLast('/')
+            .replace(Regex("[\\p{Cntrl}<>:\"|?*]"), "_").trim(' ', '.').take(180)
+          require(savedName.isNotEmpty()) { "Invalid filename" }
+          check(!destroyed) { "Image export cancelled" }
+          val values = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, savedName)
+            put(MediaStore.Downloads.MIME_TYPE, image.mime)
+            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.Downloads.IS_PENDING, 1)
+          }
+          val target = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+            ?: error("Could not create image in Downloads")
+          uri = target
+          resolver.openOutputStream(target)?.use { stream ->
+            for (offset in image.bytes.indices step (64 * 1024)) {
+              check(!destroyed) { "Image export cancelled" }
+              stream.write(image.bytes, offset, minOf(64 * 1024, image.bytes.size - offset))
+            }
+          } ?: error("Could not write image")
+          check(!destroyed) { "Image export cancelled" }
+          check(resolver.update(target, ContentValues().apply {
+            put(MediaStore.Downloads.IS_PENDING, 0)
+          }, null, null) == 1) { "Could not finish saving image" }
+        } catch (error: Exception) {
+          uri?.let { try { resolver.delete(it, null, null) } catch (_: Exception) {} }
+          uri = null
+          failure = error.message ?: "Could not save image"
+        }
+        activity.runOnUiThread {
+          savingImage = false
+          if (uri == null) invoke.reject(failure ?: "Could not save image")
+          else invoke.resolve(JSObject().put("status", "saved").put("name", savedName))
+        }
+      }, "baton-image-export").start()
+    } catch (error: Exception) {
+      savingImage = false
+      invoke.reject(error.message ?: "Could not start image export")
     }
   }
 }
