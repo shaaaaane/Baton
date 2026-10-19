@@ -16,6 +16,7 @@ import {
 } from './session.mjs';
 import { parseStorageSessionId } from './session-identity.mjs';
 import { getRuntimeAdapter, runtimeAdapters } from './runtime-registry.mjs';
+import { handleModeControls, MODE_CONTROL_COMMAND } from './mode-controls.mjs';
 import { WS_FRAME_LIMIT } from './config.mjs';
 import { ClaudePool } from './headless.mjs';
 import {
@@ -2011,6 +2012,15 @@ async function handleListCommandOptions(msg) {
   } = msg;
   let options = [];
   let error = '';
+  if (commandName === MODE_CONTROL_COMMAND) {
+    let cwd = process.cwd();
+    try { if (typeof projectHash === 'string' && projectHash) cwd = projectHashToPath(projectHash) || cwd; }
+    catch {}
+    await handleModeControls(msg, {
+      codex: getRuntimeAdapter('codex').interaction, cwd: path.resolve(cwd), send: wsSend,
+    });
+    return;
+  }
   try {
     const dir = typeof projectHash === 'string' && projectHash ? projectHashToPath(projectHash) : null;
     if (runtime === 'codex') {

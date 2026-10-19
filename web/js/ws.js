@@ -948,7 +948,7 @@ function dispatchWsMessage(msg) {
     } else if (msg.action === 'command_catalog_ready') {
       if (window.handleCommandCatalogReady) window.handleCommandCatalogReady(msg);
     } else if (msg.action === 'command_options') {
-      if (window.handleCommandOptions) window.handleCommandOptions(msg);
+      if (!handleWsRpcMessage(msg) && window.handleCommandOptions) window.handleCommandOptions(msg);
     } else if (msg.action === 'stream_turn_start') {
       if (isStrictTurnEvent(msg)) handleStrictTurnStart(msg);
     } else if (msg.action === 'stream_delta') {
