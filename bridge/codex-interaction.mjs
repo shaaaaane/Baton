@@ -497,6 +497,7 @@ export class CodexInteraction {
       if (error.code !== 'CODEX_ACTIVE_WRITER') throw error;
       const writer = error.writer || {};
       const automaticTakeover = !options.takeover
+        && !options.noTakeover
         && writer.canTerminate
         && writer.pid
         && writer.status === 'completed';
@@ -560,7 +561,9 @@ export class CodexInteraction {
   }
 
   async #release(session) {
-    if (session.active || session.submitting) return;
+    if (session.active || session.submitting || session.controlling
+      || (session.goal?.status === 'active' && session.goalCallbacks
+        && session.subscribedGeneration === session.client?.generation)) return;
     if (session.releasePromise) return session.releasePromise;
     const client = session.client;
     if (!client) return;
@@ -1422,6 +1425,78 @@ export class CodexInteraction {
     });
   }
 
+  async controlGoal(options) {
+    const action = options.goalAction || 'read';
+    if (!['read', 'set', 'pause', 'resume', 'clear'].includes(action)) {
+      throw new Error('Invalid Goal action.');
+    }
+    const objective = typeof options.objective === 'string' ? options.objective.trim() : '';
+    if (action === 'set' && (!objective || Array.from(objective).length > 4000)) {
+      throw new Error('Enter a goal objective (up to 4,000 characters).');
+    }
+    if (!options.nativeSessionId) throw new Error('Open an existing Codex conversation.');
+    const session = this.#session(options.nativeSessionId, options.sessionId);
+    if (options.cwd) session.cwd = options.cwd;
+    const operation = session.sendLock.then(async () => {
+      session.controlling = true;
+      try {
+        if (session.releasePromise) await session.releasePromise;
+        const client = this.#client(session);
+        await client.start();
+        const { thread } = await client.request('thread/read', { threadId: session.nativeSessionId });
+        if (thread?.id !== session.nativeSessionId) throw new Error('Unexpected thread identity.');
+        // Reading never resumes a thread or claims an external terminal's writer.
+        const readGoal = async () => {
+          const response = await client.request('thread/goal/get', { threadId: session.nativeSessionId });
+          if (!Object.hasOwn(response || {}, 'goal')) throw new Error('Codex did not return Goal state.');
+          if (response.goal && response.goal.threadId !== session.nativeSessionId) {
+            throw new Error('Unexpected Goal thread identity.');
+          }
+          session.goal = response.goal;
+          return response.goal;
+        };
+        await readGoal();
+        if (action !== 'read') {
+          if (action !== 'set' && !session.goal) throw new Error('No goal is set for this thread.');
+          if (['set', 'resume'].includes(action) && typeof options.goalCallbacks !== 'function') {
+            throw new Error('Goal execution streaming is unavailable.');
+          }
+          await this.#resume(session, { noTakeover: true });
+          if (['set', 'resume'].includes(action)) {
+            session.goalCallbacks = options.goalCallbacks;
+            session.goalStarting = true;
+          }
+          const params = { threadId: session.nativeSessionId };
+          if (action === 'clear') {
+            await client.request('thread/goal/clear', params);
+            session.goal = null;
+          } else {
+            const response = await client.request('thread/goal/set', {
+              ...params, status: action === 'pause' ? 'paused' : 'active',
+              ...(action === 'set' ? { objective } : {}),
+            });
+            if (response?.goal) session.goal = response.goal;
+          }
+          if (['set', 'resume'].includes(action)) session.goalExecutionError = '';
+          try { await readGoal(); }
+          catch (error) {
+            throw new Error('Goal action returned, but its status could not be verified: ' + error.message);
+          }
+        }
+        return {
+          protocol: 1, goal: session.goal,
+          executionError: session.goalExecutionError || '',
+        };
+      } finally {
+        session.goalStarting = false;
+        session.controlling = false;
+        await this.#release(session);
+      }
+    });
+    session.sendLock = operation.catch(() => {});
+    return operation;
+  }
+
   async #goalOutput(session, args) {
     const lower = args.toLowerCase();
     if (!args) {
@@ -1795,6 +1870,12 @@ export class CodexInteraction {
 
   #onNotification(session, client, { method, params }) {
     if (session.client !== client) return;
+    if (params?.threadId && params.threadId !== session.nativeSessionId) return;
+    if (method === 'thread/goal/updated' || method === 'thread/goal/cleared') {
+      session.goal = method.endsWith('/cleared') ? null : params.goal;
+      if (session.goal?.status !== 'active') this.#release(session).catch(() => {});
+      return;
+    }
     if (method === 'skills/changed') {
       session.skills = null;
       return;
@@ -1813,6 +1894,17 @@ export class CodexInteraction {
         pending.turn.callbacks.onControlResolved?.(requestId);
       }
       return;
+    }
+    if (method === 'turn/started' && !session.active && session.goalCallbacks
+      && (session.goal?.status === 'active' || session.goalStarting)) {
+      const id = params.turn?.id || params.turnId;
+      if (id) {
+        const turn = this.#prepareTurn(session, {
+          streamId: id, text: '', callbacks: session.goalCallbacks(id), external: true,
+        });
+        session.active = turn;
+        this.#bindTurnId(turn, id);
+      }
     }
     const active = session.active;
     if (active && this.#matchesCurrentUserItem(active, method, params)) {
@@ -2196,6 +2288,9 @@ export class CodexInteraction {
 
   #onExit(session, client, error) {
     if (session.client !== client || session.releasingClient === client) return;
+    if (session.goal?.status === 'active') {
+      session.goalExecutionError = 'Execution connection closed. Check the thread before resuming Goal.';
+    }
     session.client = null;
     session.subscribedGeneration = 0;
     const turn = session.active;
