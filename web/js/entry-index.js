@@ -31,6 +31,8 @@ import { initModePanel } from './mode-panel.js';
 import '../css/image-save.css';
 import { initImageSaveControls } from './components/image-save.js';
 import { initSystemBack } from './system-back.js';
+import '../css/file-drop.css';
+import { initMacosFileDrop } from './file-drop.js';
 
 initMessageQuotes();
 initCodeCopy();
@@ -39,6 +41,7 @@ initGoalPanel();
 initModePanel();
 initImageSaveControls();
 initSystemBack();
+initMacosFileDrop();
 
 // Replay any clicks queued by the inline shell before app.js was ready.
 if (Array.isArray(window.__navQueue)) {

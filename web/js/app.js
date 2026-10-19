@@ -426,6 +426,7 @@ function displayDeviceName(deviceName) {
 }
 
 function updateBreadcrumb() {
+  window.syncStagedSession?.();
   if (_navPointer && _navPointer.target.closest('#breadcrumb')) {
     _breadcrumbUpdatePending = true;
     return;
@@ -827,6 +828,7 @@ function switchAgentThread(sessionId) {
 }
 
 function showInputBar(visible) {
+  window.syncStagedSession?.();
   var bar = document.getElementById('input-bar');
   var scrollButton = document.getElementById('scroll-bottom-btn');
   bar.style.display = visible ? 'flex' : 'none';

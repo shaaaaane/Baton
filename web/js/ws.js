@@ -897,6 +897,7 @@ function dispatchWsMessage(msg) {
           canSend: true,
           runtime: state.appState.runtime,
         }];
+        window.rekeyStagedSession?.();
         updateBreadcrumb();
         saveNav();
         rekeyComposerDraft(msg.sessionId);

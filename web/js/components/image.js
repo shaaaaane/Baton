@@ -7,11 +7,61 @@ import { cacheAttachment, isCachedPreview } from './attachment-cache.js';
 import { contentHash } from './content-hash.js';
 
 const stagedAttachmentCards = new WeakMap();
+const attachmentTargets = new Map();
+let activeTarget = null;
+let imageQueue = Promise.resolve();
 
-function stagePickedFile(file) {
+function targetKey() {
+  return JSON.stringify([state.SERVER || '', state.appState.device, state.appState.project?.hash,
+    state.appState.session === '__new__' ? '__new__' : state.appState.session ? state.activeThreadId || state.appState.session : null,
+    state.appState.runtime]);
+}
+
+export function syncStagedSession() {
+  const key = targetKey();
+  if (activeTarget?.key === key) {
+    activeTarget.entries = state.stagedImages;
+    return activeTarget;
+  }
+  if (activeTarget) {
+    activeTarget.entries = state.stagedImages;
+    if (!activeTarget.entries.length) attachmentTargets.delete(activeTarget.key);
+  }
+  activeTarget = attachmentTargets.get(key) || { key, entries: activeTarget ? [] : state.stagedImages };
+  attachmentTargets.set(key, activeTarget);
+  state.stagedImages = activeTarget.entries;
+  renderStagedImages();
+  return activeTarget;
+}
+
+export function rekeyStagedSession() {
+  if (!activeTarget) return;
+  attachmentTargets.delete(activeTarget.key);
+  activeTarget.key = targetKey();
+  attachmentTargets.set(activeTarget.key, activeTarget);
+}
+
+function contains(entry) {
+  return entry.target === activeTarget ? state.stagedImages.includes(entry) : entry.target.entries.includes(entry);
+}
+
+function renderEntry(entry) {
+  if (entry.target === activeTarget && entry.target.key === targetKey()) renderStagedImages();
+}
+
+function addEntry(entry, target) {
+  if (activeTarget && activeTarget.key !== targetKey()) syncStagedSession();
+  if (target === activeTarget) target.entries = state.stagedImages;
+  Object.defineProperty(entry, 'target', { value: target });
+  target.entries.push(entry);
+  renderEntry(entry);
+  return entry;
+}
+
+export function stagePickedFile(file, target = syncStagedSession()) {
   if (!file) return;
-  if (file.type.startsWith('image/')) stageImageFile(file);
-  else stageAttachmentFile(file);
+  if (file.type.startsWith('image/') && file.size <= 32 * 1024 * 1024) return stageImageFile(file, target);
+  return stageAttachmentFile(file, target);
 }
 
 function onImagePicked(input) {
@@ -33,10 +83,16 @@ function onInputPaste(e) {
   if (hasImage) e.preventDefault();
 }
 
-function stageAttachmentFile(file) {
-  const entry = { kind: 'file', name: file.name, size: file.size, file, key: '', uploaded: false, progress: 0 };
-  state.stagedImages.push(entry);
+function stageAttachmentFile(file, target = syncStagedSession()) {
+  const entry = addEntry({ kind: 'file', name: file.name, size: file.size, file, key: '', uploaded: false, progress: 0 }, target);
   return uploadStagedFile(entry);
+}
+
+export function stageNativeFile(file, transport, target) {
+  const entry = addEntry({ kind: file.image ? 'image' : 'file', name: file.name, size: file.size,
+    native: { ...file, transport }, key: '', uploaded: false, progress: 0, dataUrl: '' }, target);
+  const upload = file.image ? queueImage(entry) : uploadStagedFile(entry);
+  return { entry, upload };
 }
 
 async function uploadStagedFile(entry) {
@@ -44,52 +100,77 @@ async function uploadStagedFile(entry) {
   entry.progress = 0;
   entry.uploadPhase = 'preparing';
   entry.controller = new AbortController();
-  renderStagedImages();
+  renderEntry(entry);
   try {
     if (entry.size > FILE_MAX_BYTES) throw new Error('File exceeds the 512 MB limit');
-    const hash = await contentHash(entry.file, entry.controller.signal);
-    if (!state.stagedImages.includes(entry)) return;
+    const hash = entry.file ? await contentHash(entry.file, entry.controller.signal) : '';
+    if (!contains(entry) || entry.controller.signal.aborted) return;
     const prepared = await window.apiPost('/api/bridge/file-prepare', {
-      name: entry.name, size: entry.size, contentType: entry.file.type || 'application/octet-stream',
+      name: entry.name, size: entry.size, contentType: entry.file?.type || 'application/octet-stream',
       contentHash: hash,
     });
-    if (!state.stagedImages.includes(entry)) return;
+    if (!contains(entry) || entry.controller.signal.aborted) return;
     entry.key = prepared.key;
-    // The same content is already stored: nothing to upload.
     if (!prepared.exists) {
       entry.uploadPhase = 'uploading';
       updateStagedUpload(entry);
-      await uploadAttachment(entry.file, prepared, progress => {
+      const progress = progress => {
         entry.progress = progress;
-        updateStagedUpload(entry);
-      }, entry.controller.signal);
+        if (entry.target === activeTarget) updateStagedUpload(entry);
+      };
+      if (entry.native) {
+        await entry.native.transport.upload(entry.native.token, prepared, progress, entry.controller.signal);
+      } else {
+        await uploadAttachment(entry.file, prepared, progress, entry.controller.signal);
+      }
     }
-    if (!state.stagedImages.includes(entry)) return;
+    if (!contains(entry) || entry.controller.signal.aborted) return;
     entry.progress = 100;
     entry.uploaded = true;
-    // Keep the local copy so previewing it never downloads it back.
-    if (isCachedPreview(entry.key)) cacheAttachment(entry.key, entry.name, entry.file);
+    if (entry.file && isCachedPreview(entry.key)) cacheAttachment(entry.key, entry.name, entry.file);
+    entry.file = null;
+    entry.native?.transport.release(entry.native.token);
   } catch (error) {
     if (!entry.controller.signal.aborted) entry.error = error.message || 'Upload failed';
   }
-  renderStagedImages();
+  renderEntry(entry);
 }
 
 function retryStagedFile(index) {
   const entry = state.stagedImages[index];
-  if (entry?.kind === 'file' && entry.error) return uploadStagedFile(entry);
+  if (entry?.error) return entry.kind === 'file' ? uploadStagedFile(entry) : queueImage(entry);
 }
 
-function stageImageFile(file) {
+function stageImageFile(file, target = syncStagedSession()) {
   if (!file) return;
-  var entry = { name: file.name, dataUrl: '', key: '', uploaded: false };
-  state.stagedImages.push(entry);
-  renderStagedImages();
+  const entry = addEntry({ name: file.name, size: file.size, file, dataUrl: '', key: '', uploaded: false }, target);
+  return queueImage(entry);
+}
 
-  var reader = new FileReader();
-  reader.onload = function () {
-    var img = new Image();
-    img.onload = function () {
+function queueImage(entry) {
+  entry.error = '';
+  entry.controller = new AbortController();
+  renderEntry(entry);
+  imageQueue = imageQueue.then(() => uploadImage(entry)).catch(() => {});
+  return imageQueue;
+}
+
+async function uploadImage(entry) {
+  if (!contains(entry) || entry.controller.signal.aborted) return;
+  let objectUrl;
+  try {
+    if (entry.size > FILE_MAX_BYTES) throw new Error('File exceeds the 512 MB limit');
+    if (!entry.dataUrl) {
+      const file = entry.file || await entry.native.transport.readImage(entry.native.token);
+      if (!contains(entry) || entry.controller.signal.aborted) return;
+      objectUrl = URL.createObjectURL(file);
+      const img = await new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => reject(new Error('Could not decode image; add it as a file instead'));
+        image.src = objectUrl;
+      });
+      if (!contains(entry) || entry.controller.signal.aborted) return;
       // Compress
       var scale = Math.min(1, 1280 / Math.max(img.width, img.height));
       var canvas = document.createElement('canvas');
@@ -106,24 +187,19 @@ function stageImageFile(file) {
 
       entry.dataUrl = dataUrl;
       entry.key = key;
-      renderStagedImages();
-
-      // Upload immediately
-      apiPost('/api/bridge/upload-image', { key: key, data: base64 })
-        .then(function () {
-          entry.uploaded = true;
-          renderStagedImages();
-        })
-        .catch(function () {
-          // Remove failed entry
-          var fi = state.stagedImages.indexOf(entry);
-          if (fi >= 0) state.stagedImages.splice(fi, 1);
-          renderStagedImages();
-        });
-    };
-    img.src = reader.result;
-  };
-  reader.readAsDataURL(file);
+      entry.file = null;
+      renderEntry(entry);
+    }
+    await window.apiPost('/api/bridge/upload-image', { key: entry.key, data: entry.dataUrl.split(',')[1] });
+    if (!contains(entry) || entry.controller.signal.aborted) return;
+    entry.uploaded = true;
+    entry.native?.transport.release(entry.native.token);
+  } catch (error) {
+    if (!entry.controller.signal.aborted) entry.error = error.message || 'Image upload failed';
+  } finally {
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
+    renderEntry(entry);
+  }
 }
 
 function stagedUploadOverlayHtml(entry) {
@@ -177,6 +253,7 @@ function updateStagedUpload(entry) {
 function renderStagedImages() {
   window.updateSendBtn?.({ skipSpinner: true });
   var row = document.getElementById('img-preview-row');
+  if (!row) return;
   if (!state.stagedImages.length) { row.style.display = 'none'; row.innerHTML = ''; return; }
   const scrollLeft = row.scrollLeft;
   row.style.display = 'flex';
@@ -236,6 +313,7 @@ function renderStagedImages() {
 function removeStagedImage(i) {
   const entry = state.stagedImages[i];
   entry?.controller?.abort();
+  entry?.native?.transport.release(entry.native.token);
   if (entry?.kind === 'file' && entry.key) window.clearAttachmentPreviewCache?.(entry.key);
   state.stagedImages.splice(i, 1);
   renderStagedImages();
@@ -285,4 +363,5 @@ Object.assign(window, {
   onImagePicked, onInputPaste, stageImageFile, renderStagedImages, removeStagedImage,
   viewStagedImage, showGallery, galleryPrev, galleryNext,
   stageAttachmentFile, retryStagedFile,
+  syncStagedSession, rekeyStagedSession,
 });
