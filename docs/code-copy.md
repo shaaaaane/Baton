@@ -31,9 +31,11 @@ native-device screenshots.
 
 ## Validation
 
-- Frontend: 609 passed, one existing skip, including seven focused tests for
+- Frontend: 611 passed, one existing skip, including seven focused tests for
   content, streaming replacement, Mermaid, failure/retry, pending writes,
   excluded content and cleanup.
+- Two additional DOM tests verify that action buttons do not cause unchanged
+  messages to be replaced during history reconciliation.
 - Packaging: 31 passed. Vite build passed.
 - Actual Chromium at 390px and 1180px: clipboard read-back matches highlighted
   code, streaming snapshots and Mermaid source; failure/retry, keyboard Enter,

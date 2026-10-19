@@ -13,7 +13,7 @@ export function refreshCodeCopy() {
     if (existing) return;
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'code-copy';
+    button.className = 'code-copy message-action';
     button.textContent = 'Copy';
     button.setAttribute('aria-label', 'Copy code');
     button.title = 'Copy the code currently shown';
