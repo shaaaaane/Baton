@@ -12,6 +12,30 @@ The file viewer has one Download action and no separate Share button. It works f
 
 The web/server/Bridge changes require their respective deployment/update. The native download plugin requires rebuilding and updating each app binary; a server-only deployment cannot add a native plugin to an installed app.
 
+## Mermaid PNG and SVG export
+
+Rendered diagrams have an **Export** menu in the chat header and fullscreen viewer. PNG creates a raster image; SVG preserves vector text and shapes. Both include the whole diagram even after fullscreen zoom/pan, and preserve Unicode labels and rendered colors. The menu reports progress and errors, rejects duplicate clicks, and allows retry.
+
+Generated files are saved locally; they are not uploaded to S3. SVG/image payloads are limited to 32 MiB. PNG rendering is bounded to 16 million pixels and 8192 pixels per side; if PNG conversion fails, SVG remains available.
+
+- Desktop apps save to Downloads without replacing existing files.
+- Android 10+ writes a new MediaStore Downloads entry, deleting unfinished entries on failure. Android 7–9 continues to support existing HTTPS downloads, but generated image export reports that Android 10+ is required.
+- iOS presents the existing system share sheet and cleans up its temporary file afterwards.
+- Browsers use a temporary Blob URL with the browser download manager.
+
+This requires rebuilding the native app: older binaries accept HTTPS downloads only. Mac/iOS compilation and native system-save acceptance must be checked before release; browser downloads and Android plugin tests do not establish device acceptance.
+
+![Mermaid export in a narrow browser viewport](assets/showcase/mermaid-export.png)
+
+Additional local decoder checks:
+
+```sh
+cargo test --manifest-path test/native/local-image/Cargo.toml --locked
+# After the Tauri Android project has been generated:
+cd src-tauri/gen/android
+./gradlew :tauri-plugin-file-download:testReleaseUnitTest
+```
+
 ## S3 upload acceleration
 
 `server/install.sh` already enables acceleration on the deployment bucket by default and passes `FileUploadAcceleration=true` to the stack, which sets `S3_UPLOAD_ACCELERATE=true` in Lambda. Setting `S3_UPLOAD_ACCELERATE=false` when running the installer opts out. Signed uploads retain a standard regional URL fallback if acceleration is unavailable. Acceleration may incur additional transfer charges and may take time to become available after enabling it.

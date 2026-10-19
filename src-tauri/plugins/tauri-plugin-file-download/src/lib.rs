@@ -2,6 +2,8 @@ use tauri::{plugin::{Builder, TauriPlugin}, Runtime};
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod filename;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod local_image;
 
 #[cfg(target_os = "ios")]
 tauri::ios_plugin_binding!(init_plugin_file_download);
@@ -13,6 +15,10 @@ async fn download<R: Runtime>(app: tauri::AppHandle<R>, url: String, name: Strin
   use tauri::Manager;
   let directory = app.path().download_dir().map_err(|error| error.to_string())?;
   tauri::async_runtime::spawn_blocking(move || {
+    if url.starts_with("data:") {
+      let path = local_image::save(&url, &directory, &name)?;
+      return Ok(serde_json::json!({ "status": "saved", "path": path }));
+    }
     let url = reqwest::Url::parse(&url).map_err(|_| "Invalid download URL".to_string())?;
     if url.scheme() != "https" || url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
       return Err("Downloads require an HTTPS URL".to_string());
