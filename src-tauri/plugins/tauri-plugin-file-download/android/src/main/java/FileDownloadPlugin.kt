@@ -43,10 +43,15 @@ class ReceiptArgs { lateinit var id: String }
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.WRITE_EXTERNAL_STORAGE], alias = "legacyStorage")])
 class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
   private data class PendingDownload(val id: Long, val name: String, val mime: String, val invoke: Invoke, val progress: Channel?, val requestId: String?)
+  private class LocalDownload(val invoke: Invoke, val requestId: String?) {
+    val operation = LocalImageOperation()
+    val cancellations = mutableListOf<Invoke>()
+  }
+
   private var pending: PendingDownload? = null
+  private var localPending: LocalDownload? = null
   private var waitingPermission: Pair<Invoke, DownloadArgs>? = null
   private val history = RequestHistory { SystemClock.elapsedRealtime() }
-  private data class SavedDownload(val downloadId: Long, val name: String, val mime: String)
   private val receipts = mutableMapOf<String, SavedDownload>()
   private val handler = Handler(Looper.getMainLooper())
   private val poll = object : Runnable {
@@ -68,8 +73,11 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
     try {
       val args = invoke.parseArgs(DownloadArgs::class.java)
       history.check(args.requestId)
-      require(pending == null && waitingPermission == null) { "A download is already in progress" }
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
+      require(pending == null && localPending == null && waitingPermission == null) { "A download is already in progress" }
+      if (args.url.startsWith("data:")) {
+        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { "Saving local images requires Android 10 or newer" }
+        saveLocalImage(invoke, args)
+      } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
         waitingPermission = Pair(invoke, args)
         requestPermissionForAlias("legacyStorage", invoke, "storagePermissionCallback")
       } else enqueue(invoke, args)
@@ -96,6 +104,12 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
     try {
       val requestId = invoke.parseArgs(CancelArgs::class.java).requestId
       history.validate(requestId)
+      val local = localPending
+      if (local?.requestId == requestId) {
+        local.operation.cancel()
+        local.cancellations.add(invoke)
+        return@runOnUiThread
+      }
       val download = pending
       val waiting = waitingPermission
       if (download?.requestId == requestId) {
@@ -121,6 +135,7 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   override fun onDestroy() {
+    localPending?.operation?.cancel()
     waitingPermission?.let {
       history.record(it.second.requestId, true)
       it.first.reject("Download cancelled")
@@ -163,7 +178,7 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
       require(status != DownloadManager.STATUS_FAILED) { "Download failed. Check your connection and available storage, then retry." }
       if (status != DownloadManager.STATUS_SUCCESSFUL) return
       require(total < 0 || total == received) { "The downloaded file is incomplete. Please retry." }
-      val receipt = SavedDownload(download.id, download.name, download.mime)
+      val receipt = SavedDownload.Managed(download.id, download.name, download.mime)
       receipts[download.id.toString()] = receipt
       clearPendingDownload()
       download.invoke.resolve(JSObject().put("status", "saved").put("id", download.id.toString()).put("name", download.name))
@@ -178,8 +193,16 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
     try {
       val id = invoke.parseArgs(ReceiptArgs::class.java).id
       val receipt = receipts[id] ?: error("Download receipt expired. Open the file from system Downloads.")
-      val manager = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-      val uri = manager.getUriForDownloadedFile(receipt.downloadId) ?: error("The downloaded file was moved or removed")
+      val uri = when (receipt) {
+        is SavedDownload.Managed -> {
+          val manager = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+          manager.getUriForDownloadedFile(receipt.downloadId) ?: error("The downloaded file was moved or removed")
+        }
+        is SavedDownload.Local -> Uri.parse(receipt.uri).also {
+          activity.contentResolver.openAssetFileDescriptor(it, "r")?.use { }
+            ?: error("The downloaded file was moved or removed")
+        }
+      }
       val open = Intent(Intent.ACTION_VIEW).setDataAndType(uri, receipt.mime)
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
       open.clipData = ClipData.newRawUri(receipt.name, uri)
@@ -246,4 +269,57 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
     return stem.take(60) + "-" + System.currentTimeMillis() + extension.take(20)
   }
 
+  @android.annotation.TargetApi(29)
+  private fun saveLocalImage(invoke: Invoke, args: DownloadArgs) {
+    val name = destinationName(safeName(args.name))
+    val local = LocalDownload(invoke, args.requestId)
+    localPending = local
+    try {
+      Thread({
+        var receipt: SavedDownload.Local? = null
+        var failure: String? = null
+        try {
+          val image = LocalImageData.decode(args.url)
+          var lastProgress = 0L
+          val saved = local.operation.save(image, {
+            MediaStoreImage.create(activity.applicationContext.contentResolver, name, image.mime)
+          }) { received, total ->
+            val now = SystemClock.elapsedRealtime()
+            if (received == 0L || received == total || now - lastProgress >= 100) {
+              lastProgress = now
+              handler.post {
+                if (localPending === local) {
+                  try {
+                    args.onProgress?.send(JSObject().put("received", received).put("total", total)
+                      .put("state", "downloading"))
+                  } catch (_: Exception) { }
+                }
+              }
+            }
+          }
+          receipt = SavedDownload.Local(saved.uri.toString(), name, image.mime)
+        } catch (error: Exception) {
+          failure = error.message ?: "Could not save local image"
+        }
+        val saved = receipt
+        val error = failure
+        handler.post {
+          history.record(local.requestId, local.operation.isCancelled())
+          localPending = null
+          if (saved != null) {
+            receipts[saved.id] = saved
+            local.invoke.resolve(JSObject().put("status", "saved").put("id", saved.id).put("name", saved.name))
+          } else local.invoke.reject(error ?: "Could not save local image")
+          for (cancellation in local.cancellations) {
+            if (error != null && error != "Download cancelled") cancellation.reject(error)
+            else cancellation.resolve()
+          }
+        }
+      }, "baton-local-image").start()
+    } catch (error: Exception) {
+      localPending = null
+      history.record(args.requestId, false)
+      throw error
+    }
+  }
 }

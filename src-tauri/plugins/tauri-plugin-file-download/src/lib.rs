@@ -4,6 +4,9 @@ use tauri::{plugin::{Builder, TauriPlugin}, Runtime};
 mod filename;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
+mod local_image;
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod desktop;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -45,6 +48,13 @@ async fn download<R: Runtime>(
     let _ = channel.send(serde_json::json!({ "received": 0, "total": null, "state": "connecting" }));
   }
   let pending = operation.run(async {
+    if url.starts_with("data:") {
+      return local_image::save(&url, &directory, &name, |received, total| {
+        if let Some(channel) = &on_progress {
+          let _ = channel.send(serde_json::json!({ "received": received, "total": total }));
+        }
+      }).await;
+    }
     let url = transfer::parse_url(&url)?;
     transfer::save(transfer::client()?, url, &directory, &name, transfer::IDLE_TIMEOUT, |received, total| {
       if let Some(channel) = &on_progress {

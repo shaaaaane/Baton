@@ -16,6 +16,8 @@ dependencies = next(iter(config["target"].values()))["dependencies"]
 dependencies["tokio"]["features"] += ["rt", "net", "io-util"]
 manifest = '[package]\nname="file-download-portable"\nversion="0.1.0"\nedition="2021"\n[dependencies]\n'
 for name, dep in dependencies.items():
+    if isinstance(dep, str):
+        dep = {"version": dep}
     values = [f"version = {json.dumps(dep['version'])}",
               f"features = {json.dumps(dep.get('features', []))}"]
     if "default-features" in dep:

@@ -60,13 +60,19 @@ export async function downloadFile(file, onProgress, { signal } = {}) {
       signal?.removeEventListener('abort', abort);
     }
   }
+  // Blob URLs avoid browser-specific data-URL download limits for generated images.
+  const generated = file.url.startsWith('data:image/');
+  const blob = generated ? await (await fetch(file.url, { signal })).blob() : null;
+  signal?.throwIfAborted();
+  const localUrl = blob ? URL.createObjectURL(blob) : null;
   const link = document.createElement('a');
-  link.href = file.url;
+  link.href = localUrl || file.url;
   link.download = file.name;
   link.rel = 'noopener noreferrer';
   document.body.appendChild(link);
   link.click();
   link.remove();
+  if (localUrl) setTimeout(() => URL.revokeObjectURL(localUrl), 1000);
   return { status: 'started' };
 }
 

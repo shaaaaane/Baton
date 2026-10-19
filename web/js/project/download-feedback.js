@@ -8,18 +8,20 @@ export function formatDownloadBytes(bytes) {
 }
 
 export function createDownloadFeedback({ openReceipt = openDownloadReceipt } = {}) {
-  let card, toggle, previousFocus;
+  let card, toggle, previousFocus, backLayer;
   const entries = new Map();
   function hide() {
     if (!card || card.hidden) return false;
     const restoreFocus = card.contains(document.activeElement);
     card.hidden = true;
+    backLayer?.deactivate();
     toggle.setAttribute('aria-expanded', 'false');
     if (restoreFocus) (previousFocus?.isConnected ? previousFocus : toggle).focus();
     return true;
   }
   function reveal() {
     card.hidden = false;
+    backLayer?.activate();
     toggle.setAttribute('aria-expanded', 'true');
   }
   function mount() {
@@ -53,6 +55,10 @@ export function createDownloadFeedback({ openReceipt = openDownloadReceipt } = {
     if (topBar) topBar.insertBefore(toggle, document.getElementById('top-right'));
     else { toggle.classList.add('download-toggle-floating'); document.body.appendChild(toggle); }
     document.body.appendChild(card);
+    backLayer = window.registerEdgeBackLayer?.({
+      navigateBack: hide, foregroundSelectors: ['#download-panel'],
+      guardZIndex: 1101, foregroundZIndex: 1100,
+    });
     card.querySelector('[data-action="dismiss"]').onclick = hide;
     window.addEventListener('keydown', onKeyDown, true);
   }
@@ -127,6 +133,8 @@ export function createDownloadFeedback({ openReceipt = openDownloadReceipt } = {
     hide,
     dispose() {
       window.removeEventListener('keydown', onKeyDown, true);
+      backLayer?.unregister();
+      backLayer = null;
       card?.remove(); toggle?.remove(); entries.clear();
       card = toggle = null;
     },

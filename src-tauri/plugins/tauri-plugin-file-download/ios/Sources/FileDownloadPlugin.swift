@@ -33,6 +33,7 @@ class FileDownloadPlugin: Plugin {
     let invoke: Invoke
     let args: DownloadArgs
     let name: String
+    var localWriting = false
     var task: URLSessionDownloadTask?
     var progressTimer: Timer?
     var failure: String?
@@ -88,13 +89,14 @@ class FileDownloadPlugin: Plugin {
       }
     }
     guard active == nil else { invoke.reject("A download or share is already in progress"); return }
-    guard let url = URL(string: args.url), url.scheme == "https", url.host != nil, url.user == nil, url.password == nil else {
-      invoke.reject("Downloads require an HTTPS URL"); return
-    }
     let name = (args.name.replacingOccurrences(of: "\\", with: "/") as NSString).lastPathComponent
     guard !name.isEmpty, name != ".", name != ".." else { invoke.reject("Invalid filename"); return }
     let transfer = Transfer(invoke, args, name)
     active = transfer
+    if args.url.hasPrefix("data:") { saveLocalImage(transfer); return }
+    guard let url = URL(string: args.url), url.scheme == "https", url.host != nil, url.user == nil, url.password == nil else {
+      finish(transfer, error: "Downloads require an HTTPS URL"); return
+    }
     let task = session.downloadTask(with: url) { temporary, response, error in
       // URLSession owns the temporary URL only for this callback's lifetime.
       DispatchQueue.main.sync { self.received(transfer, temporary, response, error) }
@@ -125,6 +127,7 @@ class FileDownloadPlugin: Plugin {
       if let transfer = self.active, transfer.args.requestId == args.requestId {
         transfer.cancelled = true
         transfer.waiters.append(invoke)
+        if transfer.localWriting { return }
         if let task = transfer.task {
           task.cancel()
         } else {
@@ -184,23 +187,71 @@ class FileDownloadPlugin: Plugin {
       try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
       let target = folder.appendingPathComponent(transfer.name)
       try FileManager.default.moveItem(at: temporary, to: target)
-      guard var presenter = webview?.window?.rootViewController else {
-        finish(transfer, error: "No window available for sharing"); return
-      }
-      while let presented = presenter.presentedViewController { presenter = presented }
-      let sheet = UIActivityViewController(activityItems: [target], applicationActivities: nil)
-      transfer.sheet = sheet
-      sheet.popoverPresentationController?.sourceView = presenter.view
-      sheet.popoverPresentationController?.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.maxY - 1, width: 1, height: 1)
-      sheet.completionWithItemsHandler = { _, completed, _, error in
-        self.finish(transfer, error: error == nil ? nil : "Could not share download",
-                    result: ["status": completed ? "shared" : "cancelled"])
-      }
-      presenter.present(sheet, animated: true)
+      share(transfer, target)
     } catch {
       finish(transfer, error: "Could not save download")
     }
   }
+  private func saveLocalImage(_ transfer: Transfer) {
+    transfer.localWriting = true
+    try? transfer.args.onProgress?.send(DownloadProgress(received: 0, total: nil, state: "downloading"))
+    DispatchQueue.global(qos: .userInitiated).async {
+      var folder: URL?
+      var target: URL?
+      var failure: String?
+      do {
+        let bytes = try self.imageData(transfer.args.url)
+        let current = DispatchQueue.main.sync { self.active === transfer && !transfer.cancelled }
+        guard current else { throw NSError(domain: "Download cancelled", code: 1) }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("baton-export-" + UUID().uuidString)
+        folder = directory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent(transfer.name)
+        try bytes.write(to: file, options: .atomic)
+        target = file
+      } catch { failure = "Could not save image. Check its format and the 32 MiB limit." }
+      DispatchQueue.main.async {
+        transfer.localWriting = false
+        transfer.folder = folder
+        if transfer.cancelled { self.finish(transfer, error: "Download cancelled"); return }
+        guard let target = target else { self.finish(transfer, error: failure ?? "Could not save image"); return }
+        let size = (try? target.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        try? transfer.args.onProgress?.send(DownloadProgress(received: Int64(size), total: Int64(size), state: "downloading"))
+        self.share(transfer, target)
+      }
+    }
+  }
+
+  private func imageData(_ url: String) throws -> Data {
+    let invalid = NSError(domain: "Invalid or oversized image data URL (maximum 32 MiB)", code: 1)
+    guard let comma = url.prefix(64).firstIndex(of: ",") else { throw invalid }
+    let header = String(url[..<comma])
+    let types = ["image/png", "image/jpeg", "image/gif", "image/webp", "image/svg+xml"]
+    guard types.contains(where: { header == "data:\($0);base64" }) else { throw invalid }
+    let encoded = String(url[url.index(after: comma)...])
+    let maximum = 32 * 1024 * 1024
+    guard encoded.utf8.count <= ((maximum + 2) / 3) * 4,
+          let bytes = Data(base64Encoded: encoded), !bytes.isEmpty, bytes.count <= maximum,
+          bytes.base64EncodedString() == encoded else { throw invalid }
+    return bytes
+  }
+
+  private func share(_ transfer: Transfer, _ target: URL) {
+    guard var presenter = webview?.window?.rootViewController else {
+      finish(transfer, error: "No window available for sharing"); return
+    }
+    while let presented = presenter.presentedViewController { presenter = presented }
+    let sheet = UIActivityViewController(activityItems: [target], applicationActivities: nil)
+    transfer.sheet = sheet
+    sheet.popoverPresentationController?.sourceView = presenter.view
+    sheet.popoverPresentationController?.sourceRect = CGRect(x: presenter.view.bounds.midX, y: presenter.view.bounds.maxY - 1, width: 1, height: 1)
+    sheet.completionWithItemsHandler = { _, completed, _, error in
+      self.finish(transfer, error: error == nil ? nil : "Could not share download",
+                  result: ["status": completed ? "shared" : "cancelled"])
+    }
+    presenter.present(sheet, animated: true)
+  }
+
 }
 
 @_cdecl("init_plugin_file_download")
