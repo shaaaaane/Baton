@@ -40,7 +40,7 @@ credentials are rejected.
 
 The native saving core, tests and browser download handling are identical across
 the Mermaid export, image saving and download queue contributions. Each contribution can be reviewed
-on its own; after either is merged, those shared changes need only be retained
+on its own; after any one is merged, those shared changes need only be retained
 once.
 
 ## Validation and native acceptance
@@ -66,4 +66,4 @@ viewer gestures, close button and draft still work. Include cached images and
 HTTPS originals. Automated browser checks do not verify Downloads, MediaStore
 or the iOS share sheet.
 
-The shared native core includes cancellable image writes and saved receipts. A combined browser check with Mermaid export, the project queue and Android Back also preserves the original PNG bytes and the draft. This contribution keeps its own image controls; it does not import the queue or Mermaid UI. Native builds/device acceptance remain required.
+The shared native core includes cancellable image writes and saved receipts. A combined browser check with Mermaid export, the project queue and Android Back also preserves the original PNG bytes and the draft. This contribution keeps its own image controls; it does not import the queue or Mermaid UI. Mac/iOS builds and native device acceptance remain required. A combined ARM64 Android debug APK compiled successfully; it has not been installed.
