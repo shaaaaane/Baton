@@ -5,6 +5,8 @@ import { mountBackButton } from './components/back-button.js';
 import { attachPageEdgeBackGesture } from './edge-back.js';
 import '../css/back-button.css';
 import qrcode from 'qrcode-generator';
+import { initNativeTabs } from './macos-tabs.js';
+initNativeTabs();
 import { initSystemBack } from './system-back.js';
 
 (function () {

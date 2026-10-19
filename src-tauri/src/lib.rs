@@ -1,15 +1,10 @@
 // Multi-window is macOS-only. Windows/Linux are intentionally left single-window
 // (title_bar_style/hidden_title below are macOS-only builder methods anyway).
 mod preview_proxy;
+mod macos_tabs;
 mod macos_zoom;
 #[cfg(target_os = "macos")]
 mod macos_drop;
-
-#[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-#[cfg(target_os = "macos")]
-static WINDOW_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 #[tauri::command]
 fn ios_build_number() -> Option<String> {
@@ -31,33 +26,10 @@ fn ios_build_number() -> Option<String> {
   }
 }
 
-// Open a fresh viewer window. Each window is its own WebView (isolated DOM/JS,
-// own WS connection + sessionStorage nav), so different windows can browse
-// different projects/sessions without interfering. Cascade-offset so it
-// doesn't land exactly on top of the window that spawned it.
+// Cmd+N creates an independent window; Cmd+T explicitly joins the current native group.
 #[cfg(target_os = "macos")]
 fn spawn_peek_window(app: &tauri::AppHandle) {
-  use tauri::{WebviewUrl, WebviewWindowBuilder};
-
-  let n = WINDOW_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
-  let label = format!("peek-{}", n);
-  let offset = (n % 8) as f64 * 28.0;
-
-  let res = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("index.html".into()))
-    .title("Baton")
-    .inner_size(1024.0, 768.0)
-    .min_inner_size(480.0, 400.0)
-    .resizable(true)
-    .background_color(tauri::webview::Color(0x16, 0x1b, 0x22, 0xff))
-    .title_bar_style(tauri::TitleBarStyle::Transparent)
-    .hidden_title(true)
-    .position(120.0 + offset, 120.0 + offset)
-    .build();
-
-  match res {
-    Ok(window) => macos_drop::configure_window(&window),
-    Err(e) => log::error!("failed to create window {}: {}", label, e),
-  }
+  macos_tabs::native::spawn(app, false);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -74,6 +46,8 @@ pub fn run() {
   #[cfg(target_os = "macos")]
   let builder = builder.invoke_handler(tauri::generate_handler![
     ios_build_number,
+    macos_tabs::macos_new_tab,
+    macos_tabs::macos_set_tab_title,
     macos_zoom::macos_set_zoom,
     preview_proxy::preview_start,
     preview_proxy::preview_credit,
@@ -90,6 +64,8 @@ pub fn run() {
   #[cfg(not(target_os = "macos"))]
   let builder = builder.invoke_handler(tauri::generate_handler![
       ios_build_number,
+      macos_tabs::macos_new_tab,
+      macos_tabs::macos_set_tab_title,
       macos_zoom::macos_set_zoom,
       preview_proxy::preview_start,
       preview_proxy::preview_credit,
@@ -145,11 +121,13 @@ pub fn run() {
           file.prepend(&new_window)?;
         }
 
+        macos_tabs::native::setup(app, &menu)?;
         app.set_menu(menu)?;
         app.on_menu_event(|app, event| {
           if event.id() == "new_window" {
             spawn_peek_window(app);
           }
+          macos_tabs::native::handle_menu(app, event.id().as_ref());
         });
       }
 
