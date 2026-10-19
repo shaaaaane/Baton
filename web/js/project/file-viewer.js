@@ -1,5 +1,6 @@
 // Project file viewer: text up to 300 KB arrives over WS; larger content uses S3.
 import { state } from '../state.js';
+import '../../css/downloads.css';
 import { registerEdgeBackLayer } from '../edge-back.js';
 import { mountBackButton } from '../components/back-button.js';
 import { loadingSpinner } from '../components/loading.js';
