@@ -17,6 +17,10 @@ import './globals.js';   // defines window.loadViewerLibs (does NOT download lib
 import './app.js';
 import './preview-prewarm.js';
 import './project/browser.js';
+import '../css/image-save.css';
+import { initImageSaveControls } from './components/image-save.js';
+
+initImageSaveControls();
 import './scroll-indicator.js';
 import '../css/message-quote.css';
 import { initMessageQuotes } from './message-quote.js';
