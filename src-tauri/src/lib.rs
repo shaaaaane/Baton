@@ -90,7 +90,7 @@ pub fn run() {
   #[cfg(not(target_os = "macos"))]
   let builder = builder.invoke_handler(tauri::generate_handler![
       ios_build_number,
-    macos_zoom::macos_set_zoom,
+      macos_zoom::macos_set_zoom,
       preview_proxy::preview_start,
       preview_proxy::preview_credit,
       preview_proxy::preview_write,
