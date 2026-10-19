@@ -30,6 +30,7 @@ The explicit Cmd+T/+ actions are implemented here. AppKit's own optional tab-str
 
 - Frontend: 609 passed, 1 existing skip, including 7 native-tab controller tests. Packaging: 31 passed. Vite build passed.
 - Full Rust application: `cargo check --locked --target aarch64-apple-darwin` passed with Clang 18 for the Objective-C exception helper. This checks the actual AppKit/Tauri code and command registration; it does not link a Mac application bundle, create NSWindows or run the app.
+- The full Rust application also passed `cargo check --locked --target aarch64-linux-android`, including the non-Mac command paths. This is a type check, not a new Android APK or device test.
 - Actual Chromium at 480/1180 px with simulated native IPC: independent page titles, rename isolation, new-tab duplicate suppression, failure/retry, source draft and caret preservation, navigation snapshot restoration and Settings title. The ordinary 390 px browser has no native-tab control. No page errors; no horizontal overflow or collision with Settings.
 
 ```sh
