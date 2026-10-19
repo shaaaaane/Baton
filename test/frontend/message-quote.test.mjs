@@ -29,7 +29,7 @@ function setup(t) {
     const node = document.createElement('div');
     node.className = 'tl-item assistant-text';
     node.dataset.messageId = id;
-    node.dataset.quoteText = text;
+    node.dataset.messageText = text;
     node.innerHTML = '<p>Rendered content</p><button>Unrelated action</button>';
     container.append(node);
     return node;
@@ -139,7 +139,7 @@ test('summary, thinking, command panels and image-only messages offer no quote',
   const { container, assistant } = setup(t);
   assistant('');
   container.insertAdjacentHTML('beforeend',
-    '<div class="summary-block"><div class="tl-item assistant-text" data-quote-text="summary">summary</div></div>'
+    '<div class="summary-block"><div class="tl-item assistant-text" data-message-text="summary">summary</div></div>'
     + '<div class="tl-item thinking-tl">thinking</div>'
     + '<div class="tl-item command-panel-tl">command</div>');
   refreshMessageQuotes();
@@ -149,7 +149,7 @@ test('summary, thinking, command panels and image-only messages offer no quote',
 test('provisional block IDs reused in different turns never mix their text', t => {
   const { container, input } = setup(t);
   container.innerHTML = ['one', 'two'].map(turn =>
-    `<div class="assistant-turn" data-turn-id="${turn}"><div class="tl-item assistant-text" data-block-id="1" data-quote-text="${turn}">${turn}</div></div>`).join('');
+    `<div class="assistant-turn" data-turn-id="${turn}"><div class="tl-item assistant-text" data-block-id="1" data-message-text="${turn}">${turn}</div></div>`).join('');
   refreshMessageQuotes();
   assert.equal(container.querySelectorAll('.message-quote').length, 2);
   container.querySelector('.message-quote').click();

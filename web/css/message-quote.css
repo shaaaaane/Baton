@@ -8,7 +8,7 @@
   padding: 6px 10px;
   cursor: pointer;
 }
-.message-quote { display: block; margin-top: 8px; }
+.message-quote { display: inline-block; vertical-align: middle; margin: 8px 8px 0 0; }
 .msg-meta .message-quote { margin: 0 0 0 8px; }
 .remove-message-quote { align-self: flex-start; margin: 0 12px 6px; }
 .message-quote:hover, .remove-message-quote:hover { color: var(--text, #e6edf3); }

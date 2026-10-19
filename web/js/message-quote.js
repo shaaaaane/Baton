@@ -1,40 +1,14 @@
 import { state } from './state.js';
 
-const selector = '.msg-user, .tl-item.assistant-text';
+import { messageTextSelector as selector, messageTextNodes as candidates,
+  messageActionTargets, messageText as messageQuoteText } from './message-text.js';
+
+export { messageQuoteText };
 const quotes = new Map();
 
 function sessionKey() {
   return JSON.stringify([state.SERVER, state.appState.device,
     state.appState.project?.hash, state.appState.session, state.activeThreadId]);
-}
-
-function identity(node) {
-  const role = node.classList.contains('msg-user') ? 'user:' : 'assistant:';
-  if (node.dataset.messageId) return role + 'message:' + node.dataset.messageId;
-  if (node.dataset.nativeId) return role + 'native:' + node.dataset.nativeId;
-  const turn = node.closest('[data-turn-id]')?.dataset.turnId;
-  return turn && node.dataset.blockId
-    ? role + 'block:' + JSON.stringify([turn, node.dataset.blockId]) : role;
-}
-
-function candidates(container) {
-  return [...container.querySelectorAll(selector)]
-    .filter(node => !node.closest('.skeleton-copy, .summary-block, .command-panel-tl'));
-}
-
-function ownText(node) {
-  return node.classList.contains('msg-user')
-    ? node.querySelector('.msg-text')?.textContent || ''
-    : node.__quoteText ?? node.dataset.quoteText ?? '';
-}
-
-export function messageQuoteText(node, container) {
-  if (node.classList.contains('msg-user')) return ownText(node);
-  const id = identity(node);
-  return candidates(container)
-    .filter(item => item === node || (id !== 'assistant:' && identity(item) === id))
-    .map(ownText)
-    .filter(Boolean).join('\n\n');
 }
 
 function canQuote(input) {
@@ -65,24 +39,17 @@ export function refreshMessageQuotes() {
   const container = document.querySelector('.messages');
   if (container) {
     const nodes = candidates(container);
-    const last = new Map();
-    const hasText = new Set();
+    const targets = new Set(messageActionTargets(container));
     for (const node of nodes) {
-      const id = identity(node);
-      if (!id.endsWith(':')) last.set(id, node);
-      if (ownText(node).trim()) hasText.add(id.endsWith(':') ? node : id);
-    }
-    for (const node of nodes) {
-      const id = identity(node);
       const existing = node.querySelector('.message-quote');
-      if ((last.has(id) && last.get(id) !== node) || !hasText.has(id.endsWith(':') ? node : id)) {
+      if (!targets.has(node)) {
         existing?.remove();
         continue;
       }
       if (existing) continue;
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = 'message-quote';
+      button.className = 'message-quote message-action';
       button.textContent = 'Quote';
       button.title = 'Quote this message in your draft';
       (node.querySelector('.msg-meta') || node).append(button);
@@ -139,7 +106,8 @@ export function initMessageQuotes() {
   document.addEventListener('pointerdown', pointerdown, true);
   document.addEventListener('input', refreshRemoveButton);
   const observer = new MutationObserver(schedule);
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+  observer.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true,
+    attributeFilter: ['data-message-id', 'data-native-id', 'data-turn-id', 'data-message-text'] });
   schedule();
   return () => {
     observer.disconnect();
