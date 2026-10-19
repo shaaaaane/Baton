@@ -18,6 +18,9 @@ import './app.js';
 import './preview-prewarm.js';
 import './project/browser.js';
 import './scroll-indicator.js';
+import { initSystemBack } from './system-back.js';
+
+initSystemBack();
 
 // Replay any clicks queued by the inline shell before app.js was ready.
 if (Array.isArray(window.__navQueue)) {
