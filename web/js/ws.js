@@ -2378,6 +2378,8 @@ var restoreScrollFrame = null;
     // IME composition: Enter confirms the candidate, not a send. Sending here
     // clears the input, then compositionend re-fills it → duplicate send + leftover text.
     if (e.isComposing || e.keyCode === 229) return;
+    // Android's return key inserts a newline; sending uses the explicit button.
+    if (/Android/i.test(navigator.userAgent)) return;
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); updateSendBtn(); }
   });
   el.addEventListener('input', function () {
