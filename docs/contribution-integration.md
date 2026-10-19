@@ -1,6 +1,6 @@
 # Pending contributions: combined verification
 
-This branch combines the thirteen open contribution PRs so their interactions and conflict resolutions can be inspected together. The individual PRs remain the review/merge units. This is not a release, an installed application, or a claim that the maintainer has accepted the changes.
+This branch combines fourteen open contribution PRs so their interactions and conflict resolutions can be inspected together. The individual PRs remain the review/merge units. This is not a release, an installed application, or a claim that the maintainer has accepted the changes.
 
 Base: `283dbf62574e0dc10f713b6fb2f9861611204406`.
 
@@ -18,29 +18,35 @@ Base: `283dbf62574e0dc10f713b6fb2f9861611204406`.
 | #102 | `6844046c62ee9904a5aa7fb04a7e2b7e3860ebec` |
 | #103 | `c445a1b0b073c70df6d3e5388f890dfd23dbf569` |
 | #104 | `8374face7672cb902406623a81c9bb11018dc7a8` |
-| #105 | `6f096fe92b83bd8a574a26637bdcd4cc7a2e1077` |
+| #105 | `49bb390cb883fc7f8122f864154327db7bd6b482` |
+| #106 | `ad7e46671c688b0dc497f6d0bc697389f5e40330` |
 
 ## Merge resolution
 
-The merge order was #92, #93, #95, #103, #104, #96, #101, #94, #99, #105, #102, #97, #98. Eleven of the 78 pairwise combinations had text conflicts; the combined branch resolves them without discarding a feature.
+The initial merge order was #92, #93, #95, #103, #104, #96, #101, #94, #99, #105, #102, #97, #98, followed by #106 and the #105 stylesheet fix. Eleven of the initial 78 pairwise combinations had text conflicts; #106 also conflicts with #97, #98 and #102 independently. This branch retains all features in the resolutions.
 
 - `web/js/entry-index.js`: retain each feature import and call each initializer once after the core modules have loaded. Quote, message Copy, code Copy, Goal, Mode, image saving, Back, file drop and zoom all remain enabled.
-- `src-tauri/src/lib.rs`: retain drag-drop window setup and commands, plus the zoom module and command. The Mac command handler includes both; the other-platform handler keeps the zoom command's explicit unsupported-platform response.
-- `src-tauri/Cargo.toml`: keep both Mac dependencies, reqwest blocking and objc2-foundation NSProcessInfo.
+- `src-tauri/src/lib.rs`: retain drop, zoom and native-tab modules and commands. The other-platform handler keeps explicit unsupported-platform responses. The native-tab window factory also configures drop hooks on every new window/tab.
+- `web/js/entry-setup.js`: initialize both native tabs and Android Back. The main entry initializes tabs, drop and zoom once.
+- `src-tauri/Cargo.toml`: retain reqwest blocking, objc2/AppKit and Foundation NSString/NSProcessInfo together.
 - `src-tauri/Cargo.lock`: regenerate the combined dependency graph. This adds the existing futures-channel/futures-sink dependency edges needed by blocking plus streaming reqwest; no package versions were upgraded.
 
 These resolutions are already present in this branch's merge history. The individual PRs have not been replaced with a single combined PR.
 
 ## Verification
 
-- Frontend: 701 passed, 1 existing skip. Bridge: 324 passed. Codex: 117 passed. Server: 145 passed. Packaging: 31 passed. Vite build passed.
+- Current fourteen-PR frontend: 708 passed, 1 existing skip. Packaging: 31 passed. Vite build passed. Bridge 324, Codex 117 and Server 145 passed on the preceding thirteen-PR combination; their source is unchanged by the tab integration and stylesheet fix.
 - Chromium at 390/1180 px: real clipboard Copy/Quote/code Copy, streaming and history updates, original image bytes, Mermaid PNG/SVG exports, queue cancellation acknowledgement/retry, draft preservation and Back closing the queue before navigation.
 - Same-session Mode/Goal checks run through the product frontend, local WebSocket, handlers and CodexInteraction, with a synthetic Codex runtime: Plan/Normal changes preserve the quote draft; Back closes Mode; Goal pause/resume preserves usage and automatic output remains visible. The individual Goal and Mode PRs separately document their real Codex runtime checks.
 - Drag/drop at 720/1180 px: real staging and browser image compression with simulated native drag/claim/upload. Duplicate events, session changes, upload progress and draft preservation pass. Zoom shortcut command dispatch during an upload also passes; this is not WKWebView zoom validation.
-- All four browser suites reported no page errors. Screenshots below are from Chromium using synthetic content, not native device screenshots.
-- Mac dependency resolution with the locked Cargo graph passed. Native Mac/iOS compilation and device acceptance are still pending.
+- A fifth browser suite exercises the actual native-tab/drop/zoom entry bootstrap with simulated Tauri IPC: two-page title isolation, tab creation retry, draft/selection preservation, Settings Back and zoom dispatch during upload. It does not execute AppKit or Finder.
+- All five browser suites reported no page errors. Screenshots below are from Chromium using synthetic content, not native device screenshots.
+- Visual inspection found that #105's queue stylesheet was not imported. The previous interaction checks missed this. Importing it from the file viewer fixes the layout; an added browser assertion failed before the fix (`static` instead of `fixed`) and passed afterward at 390/1180 px, checking panel position, width and list padding. Both standalone #105 and the combination passed this check; attachment/download focused tests passed 31/31.
+- Full Rust application checks passed for `aarch64-apple-darwin` and `aarch64-linux-android` with the locked dependency graph. Mac cross-target checking uses Clang and verifies the real AppKit/Tauri types; it does not link an app bundle or run macOS. Mac/iOS builds and device acceptance remain pending.
 
 A complete ARM64 Android debug APK of the combined implementation built successfully (command exit 0). The disposable test signature, ZIP integrity, native plugin commands, Back hook and current bundled frontend were verified. The APK was not installed; this does not establish native device acceptance.
+
+Verified product source: `ca650764950ce6a35216301b0a22bb123ee6c411`. APK SHA-256: `b43e76d8436a9368f919fe47955a4628f4ec1374e66001f139595533df8f331d`. Later documentation and screenshot changes do not alter that product source.
 
 ```sh
 npm ci
@@ -61,6 +67,6 @@ npm run build
 
 ## Remaining scope
 
-Native Mac/iOS builds and actual device saving/sharing/cancellation, Android Back/keyboard/lifecycle and Mac Finder/WKWebView behavior remain separate acceptance gates. Native tabs and independent window colors are not included here. Theme work remains deferred to the maintainer's implementation; the Android keyboard change still needs a current-device reproduction.
+Native Mac/iOS builds and actual device saving/sharing/cancellation, Android Back/keyboard/lifecycle and Mac Finder/WKWebView behavior remain separate acceptance gates. Native tabs are included in the code, but real AppKit screenshots, grouping/closing behavior and the optional native tab-strip add button still need Mac verification. Independent whole-window colors await the maintainer's theme interface. Theme work remains deferred to that implementation; the Android keyboard change still needs a current-device reproduction.
 
 Cancellable download preparation needs coordinated frontend, Bridge and Server updates. This branch does not deploy services or replace the existing Baton Lab installation.
