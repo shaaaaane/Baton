@@ -82,6 +82,27 @@ test('changing sessions while a request is pending closes the old panel and igno
   assert.equal(document.getElementById('msg-input').value, 'Keep my draft');
 });
 
+test('an account change discards a pending Goal response even when the route is unchanged', async t => {
+  let finish;
+  const ui = await setup(t, () => new Promise(resolve => { finish = resolve; }));
+  ui.state.KEY = 'first-account';
+  ui.open();
+  ui.state.KEY = 'second-account';
+  finish({ protocol: 1, goal });
+  await tick();
+  assert.equal(document.querySelector('.goal-panel'), null);
+});
+
+test('a new conversation cannot use a stale active thread to open Goal controls', async t => {
+  let requests = 0;
+  const ui = await setup(t, async () => { requests++; return { protocol: 1, goal }; });
+  ui.state.appState.session = '__new__';
+  ui.state.activeThreadId = 'codex:old';
+  ui.open(); await tick();
+  assert.equal(requests, 0);
+  assert.equal(document.querySelector('.goal-panel'), null);
+});
+
 test('new objectives do not overwrite the composer; read-only state blocks mutations', async t => {
   const calls = [];
   const ui = await setup(t, async (ctx, action, objective) => {
@@ -146,10 +167,11 @@ test('Escape closes Goal without reaching the global interrupt shortcut', async 
 test('Goal transport rejects old Bridges and responses with different conversation routing', async t => {
   const ui = await setup(t, async () => ({ protocol: 1, goal: null }));
   const { handleWsRpcMessage } = await ui.vite.ssrLoadModule('/js/ws-rpc.js');
-  const ctx = { server: 'https://test', device: 'demo', projectHash: 'project', sessionId: 'codex:one', runtime: 'codex' };
+  const ctx = { server: 'https://test', account: 'private', device: 'demo', projectHash: 'project', sessionId: 'codex:one', runtime: 'codex' };
   let payload;
   window.wsSendReliable = value => { payload = value; };
   let pending = ui.module.requestGoalControl(ctx, 'read');
+  assert.equal('account' in payload, false);
   handleWsRpcMessage({ ...payload, action: 'command_options', options: [] });
   await assert.rejects(pending, /does not support/);
   pending = ui.module.requestGoalControl(ctx, 'pause');

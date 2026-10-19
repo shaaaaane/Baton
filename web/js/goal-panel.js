@@ -14,10 +14,11 @@ export function goalUsage(goal) {
 }
 
 function context() {
+  const session = state.appState.session;
   return {
-    server: state.SERVER, device: state.appState.device || '',
+    server: state.SERVER, account: state.KEY, device: state.appState.device || '',
     projectHash: state.appState.project?.hash || '',
-    sessionId: state.activeThreadId || state.appState.session || '',
+    sessionId: session && session !== '__new__' ? state.activeThreadId || session : session || '',
     runtime: state.appState.runtime,
   };
 }
@@ -31,7 +32,7 @@ function editable(ctx) {
 }
 
 export async function requestGoalControl(ctx, action, objective) {
-  const { server, ...route } = ctx;
+  const { server, account, ...route } = ctx;
   const result = await requestWsRpc({
     action: 'list_command_options', commandName, ...route,
     goalAction: action, ...(action === 'set' ? { objective } : {}),
