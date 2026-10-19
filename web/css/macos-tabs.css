@@ -1,0 +1,4 @@
+.macos-new-tab { flex:0 0 32px; width:32px; height:32px; padding:0; border:1px solid #30363d; border-radius:6px; background:transparent; color:#c9d1d9; font-size:22px; cursor:pointer; }
+.macos-new-tab:hover { background:#30363d; }
+.macos-new-tab:disabled { opacity:.4; cursor:default; }
+.macos-new-tab:focus-visible { outline:2px solid #58a6ff; outline-offset:2px; }

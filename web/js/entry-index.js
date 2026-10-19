@@ -16,6 +16,9 @@ import '../css/workspace-header.css';
 import './globals.js';   // defines window.loadViewerLibs (does NOT download libs yet)
 import './app.js';
 import './preview-prewarm.js';
+import '../css/macos-tabs.css';
+import { initNativeTabs } from './macos-tabs.js';
+initNativeTabs();
 import './project/browser.js';
 import './scroll-indicator.js';
 
