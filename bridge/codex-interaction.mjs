@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { applyConfirmedMode, readSavedMode } from './codex-mode-state.mjs';
 import { CodexAppServerClient } from './codex-app-server.mjs';
 import {
   codexCompletedLiveMessages,
@@ -501,7 +502,7 @@ export class CodexInteraction {
         && writer.canTerminate
         && writer.pid
         && writer.status === 'completed';
-      if (!options.takeover && !automaticTakeover) throw error;
+      if (options.noTakeover || (!options.takeover && !automaticTakeover)) throw error;
       await this.writerController.terminate(
         session.nativeSessionId,
         automaticTakeover ? writer.pid : Number(options.expectedWriterPid),
@@ -931,6 +932,60 @@ export class CodexInteraction {
   async listSkills(options = {}) {
     const context = await this.listCommandContext(options);
     return context.skills;
+  }
+
+  async controlMode(options) {
+    const action = options.modeAction || 'read';
+    if (!['read', 'set'].includes(action) || (action === 'set' && !['plan', 'default'].includes(options.mode))) {
+      throw new Error('Invalid mode control action.');
+    }
+    if (!options.nativeSessionId) throw new Error('Open an existing Codex conversation.');
+    const session = this.#session(options.nativeSessionId, options.sessionId);
+    if (options.cwd) session.cwd = options.cwd;
+    const operation = session.sendLock.then(async () => {
+      session.submitting++;
+      try {
+        if (session.releasePromise) await session.releasePromise;
+        const client = this.#client(session);
+        await client.start();
+        const readThread = async () => {
+          const { thread } = await client.request('thread/read', { threadId: session.nativeSessionId });
+          if (thread?.id !== session.nativeSessionId) throw new Error('Unexpected thread identity.');
+          return thread;
+        };
+        let thread = await readThread();
+        let supported = false;
+        try {
+          const { data } = await client.request('collaborationMode/list', {});
+          supported = ['plan', 'default'].every(mode => data?.some(item => item.mode === mode));
+        } catch {}
+        let mode = readSavedMode(thread.path);
+        let source = mode ? 'saved' : 'unknown';
+        if (action === 'set') {
+          if (!supported) throw new Error('This Codex runtime does not expose Plan/Normal controls.');
+          if (session.active || thread.status?.type === 'active') {
+            throw new Error('Finish or stop the current turn before changing mode.');
+          }
+          await this.#resume(session, { noTakeover: true });
+          thread = await readThread();
+          if (session.active || thread.status?.type === 'active') {
+            throw new Error('Finish or stop the current turn before changing mode.');
+          }
+          mode = await applyConfirmedMode(client, {
+            threadId: session.nativeSessionId, mode: options.mode,
+            model: thread.model || session.model,
+            effort: Object.hasOwn(thread, 'reasoningEffort') ? thread.reasoningEffort : session.effort,
+          });
+          source = 'confirmed';
+        }
+        return { protocol: 1, mode, source, supported, running: !!(session.active || thread.status?.type === 'active') };
+      } finally {
+        session.submitting--;
+        await this.#release(session);
+      }
+    });
+    session.sendLock = operation.catch(() => {});
+    return operation;
   }
 
   async listCommandContext(options = {}) {

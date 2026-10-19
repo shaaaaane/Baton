@@ -1,0 +1,14 @@
+.mode-panel-entry { align-self:flex-start; margin:0 4px 6px; padding:4px 12px; font-size:12px; }
+.mode-panel-entry, .mode-panel button { border:1px solid #30363d; border-radius:6px; background:#161b22; color:#c9d1d9; cursor:pointer; }
+.mode-panel { box-sizing:border-box; width:min(520px, calc(100% - 24px)); max-height:calc(100dvh - 48px); margin:auto; overflow:auto; border:1px solid #30363d; border-radius:12px; padding:20px; background:#0d1117; color:#c9d1d9; font:inherit; }
+.mode-panel::backdrop { background:#0009; }
+.mode-panel header { display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:18px; }
+.mode-panel button { padding:8px 12px; min-height:36px; font:inherit; }
+.mode-panel button:disabled { opacity:.4; cursor:default; }
+.mode-panel button[aria-pressed=true] { border-color:#58a6ff; }
+.mode-actions { display:flex; gap:8px; flex-wrap:wrap; margin:16px 0; }
+.mode-panel p { margin:8px 0; line-height:1.5; white-space:pre-wrap; overflow-wrap:anywhere; }
+.mode-panel [data-mode-status] { color:#58a6ff; }
+.mode-panel [data-mode-error] { color:#f0883e; }
+.mode-panel .mode-hint { font-size:12px; color:#8b949e; }
+.mode-panel button:focus-visible, .mode-panel-entry:focus-visible { outline:2px solid #58a6ff; outline-offset:2px; }

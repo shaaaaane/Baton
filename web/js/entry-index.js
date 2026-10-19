@@ -41,3 +41,7 @@ if (Array.isArray(window.__navQueue)) {
 
 // Preheat viewer libs after 1.5s — yields IPC/main thread to navigation on Tauri.
 if (window.__preheatViewer) setTimeout(window.loadViewerLibs, 1500);
+
+import '../css/mode-panel.css';
+import { initModePanel } from './mode-panel.js';
+initModePanel();
