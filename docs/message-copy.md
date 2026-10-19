@@ -41,6 +41,10 @@ Actual Chromium with synthetic messages, not native-device captures.
 
 ![A reply copied while preserving the selected draft](images/message-copy-chat.png)
 
+With the independent Quote and code-block Copy contributions also merged:
+
+![Three message actions in a local integration check](images/message-actions-combined.png)
+
 Frontend: 616 passed, one existing skip; packaging: 31 passed; Vite build passed.
 
 Fourteen focused tests cover source escaping and CRLF, grouping and turn isolation,
