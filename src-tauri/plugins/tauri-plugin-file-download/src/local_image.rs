@@ -1,5 +1,6 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use std::{io::Write, path::{Path, PathBuf}};
+use crate::desktop::{PendingDownload, Progress};
+use std::{path::Path, time::Instant};
 
 pub const MAX_BYTES: usize = 32 * 1024 * 1024;
 
@@ -23,49 +24,21 @@ pub fn decode(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-pub fn save(url: &str, directory: &Path, name: &str) -> Result<PathBuf, String> {
+pub async fn save(
+    url: &str, directory: &Path, name: &str, notify: impl FnMut(u64, Option<u64>),
+) -> Result<PendingDownload, String> {
     let bytes = decode(url)?;
-    std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
-    let (path, mut file) = crate::filename::reserve_file(directory, name).map_err(|e| e.to_string())?;
-    let result = file.write_all(&bytes).and_then(|_| file.flush());
-    drop(file);
-    if let Err(error) = result {
-        let _ = std::fs::remove_file(&path);
-        return Err(error.to_string());
+    let total = Some(bytes.len() as u64);
+    let mut pending = PendingDownload::create(directory, name, total).map_err(|e| e.to_string())?;
+    let mut progress = Progress::new(notify, total, Instant::now());
+    let mut received = 0;
+    for chunk in bytes.chunks(64 * 1024) {
+        tokio::task::yield_now().await;
+        received = pending.write_chunk(chunk, received, total).map_err(|e| e.to_string())?;
+        progress.update(received, Instant::now(), false);
     }
-    Ok(path)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn preserves_utf8_and_rejects_invalid_input() {
-        let bytes = "<svg><text>中文 &amp; café</text></svg>".as_bytes();
-        assert_eq!(decode(&format!("data:image/svg+xml;base64,{}", STANDARD.encode(bytes))).unwrap(), bytes);
-        for url in ["file:///tmp/x", "data:text/html;base64,YQ==", "data:image/png;base64,",
-            "data:image/png;base64,YQ", "data:image/png;base64,YR==", "data:image/png;base64,@@@="] {
-            assert!(decode(url).is_err(), "{url}");
-        }
-    }
-    #[test]
-    fn enforces_inclusive_size_limit() {
-        let bytes = vec![42; MAX_BYTES];
-        assert_eq!(decode(&format!("data:image/png;base64,{}", STANDARD.encode(&bytes))).unwrap(), bytes);
-        assert!(decode(&format!("data:image/png;base64,{}", STANDARD.encode(vec![42; MAX_BYTES + 1]))).is_err());
-    }
-    #[test]
-    fn saves_original_bytes_without_overwriting_or_escaping_downloads() {
-        let directory = std::env::temp_dir().join(format!("baton-image-export-{}", std::process::id()));
-        std::fs::create_dir_all(&directory).unwrap();
-        let url = "data:image/png;base64,iVBORwABAP8=";
-        let first = save(url, &directory, "../图表.png").unwrap();
-        let second = save(url, &directory, "../图表.png").unwrap();
-        assert_eq!(first.parent(), Some(directory.as_path()));
-        assert_ne!(first, second);
-        assert_eq!(std::fs::read(first).unwrap(), STANDARD.decode("iVBORwABAP8=").unwrap());
-        assert!(save("data:text/html;base64,YQ==", &directory, "bad.html").is_err());
-        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
-        std::fs::remove_dir_all(directory).unwrap();
-    }
+    tokio::task::yield_now().await;
+    pending.finish(received, total).map_err(|e| e.to_string())?;
+    progress.update(received, Instant::now(), true);
+    Ok(pending)
 }

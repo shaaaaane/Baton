@@ -5,14 +5,16 @@ import android.app.Activity
 import android.app.DownloadManager
 import android.content.BroadcastReceiver
 import android.content.ClipData
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
-import android.provider.MediaStore
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
+import app.tauri.plugin.Channel
 import app.tauri.PermissionState
 import app.tauri.annotation.Command
 import app.tauri.annotation.InvokeArg
@@ -28,116 +30,212 @@ class DownloadArgs {
   lateinit var url: String
   lateinit var name: String
   var mime: String = "application/octet-stream"
+  var onProgress: Channel? = null
+  var requestId: String? = null
 }
+
+@InvokeArg
+class CancelArgs { lateinit var requestId: String }
+
+@InvokeArg
+class ReceiptArgs { lateinit var id: String }
 
 @TauriPlugin(permissions = [Permission(strings = [Manifest.permission.WRITE_EXTERNAL_STORAGE], alias = "legacyStorage")])
 class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
-  private data class PendingDownload(val id: Long, val name: String, val mime: String, val invoke: Invoke)
+  private data class PendingDownload(val id: Long, val name: String, val mime: String, val invoke: Invoke, val progress: Channel?, val requestId: String?)
+  private class LocalDownload(val invoke: Invoke, val requestId: String?) {
+    val operation = LocalImageOperation()
+    val cancellations = mutableListOf<Invoke>()
+  }
 
   private var pending: PendingDownload? = null
-  private var savingImage = false
-  @Volatile private var destroyed = false
-  private var foreground = true
+  private var localPending: LocalDownload? = null
+  private var waitingPermission: Pair<Invoke, DownloadArgs>? = null
+  private val history = RequestHistory { SystemClock.elapsedRealtime() }
+  private val receipts = mutableMapOf<String, SavedDownload>()
+  private val handler = Handler(Looper.getMainLooper())
+  private val poll = object : Runnable {
+    override fun run() {
+      checkDownload()
+      if (pending != null) handler.postDelayed(this, 500)
+    }
+  }
   private var receiverRegistered = false
   private val receiver = object : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
       if (intent.action == DownloadManager.ACTION_DOWNLOAD_COMPLETE
-        && intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) == pending?.id) shareCompletedDownload()
+        && intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1) == pending?.id) checkDownload()
     }
   }
 
   @Command
-  fun download(invoke: Invoke) {
-    val isImage = try { invoke.parseArgs(DownloadArgs::class.java).url.startsWith("data:") }
-      catch (_: Exception) { false }
-    if (isImage) {
-      enqueue(invoke)
-      return
+  fun download(invoke: Invoke) = activity.runOnUiThread {
+    try {
+      val args = invoke.parseArgs(DownloadArgs::class.java)
+      history.check(args.requestId)
+      require(pending == null && localPending == null && waitingPermission == null) { "A download is already in progress" }
+      if (args.url.startsWith("data:")) {
+        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { "Saving local images requires Android 10 or newer" }
+        saveLocalImage(invoke, args)
+      } else if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
+        waitingPermission = Pair(invoke, args)
+        requestPermissionForAlias("legacyStorage", invoke, "storagePermissionCallback")
+      } else enqueue(invoke, args)
+    } catch (error: Exception) {
+      if (waitingPermission?.first === invoke) waitingPermission = null
+      invoke.reject(error.message ?: "Could not start download")
     }
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q && getPermissionState("legacyStorage") != PermissionState.GRANTED) {
-      requestPermissionForAlias("legacyStorage", invoke, "storagePermissionCallback")
-      return
-    }
-    enqueue(invoke)
   }
 
   @PermissionCallback
-  fun storagePermissionCallback(invoke: Invoke) {
-    if (getPermissionState("legacyStorage") == PermissionState.GRANTED) enqueue(invoke)
-    else invoke.reject("Storage permission is required to save to Downloads on this Android version")
+  fun storagePermissionCallback(invoke: Invoke) = activity.runOnUiThread {
+    val waiting = waitingPermission ?: return@runOnUiThread
+    if (waiting.first !== invoke) return@runOnUiThread
+    waitingPermission = null
+    if (getPermissionState("legacyStorage") == PermissionState.GRANTED) enqueue(invoke, waiting.second)
+    else {
+      history.record(waiting.second.requestId, false)
+      invoke.reject("Storage permission is required to save to Downloads on this Android version")
+    }
   }
 
-  override fun onPause() { foreground = false }
+  @Command
+  fun cancel(invoke: Invoke) = activity.runOnUiThread {
+    try {
+      val requestId = invoke.parseArgs(CancelArgs::class.java).requestId
+      history.validate(requestId)
+      val local = localPending
+      if (local?.requestId == requestId) {
+        local.operation.cancel()
+        local.cancellations.add(invoke)
+        return@runOnUiThread
+      }
+      val download = pending
+      val waiting = waitingPermission
+      if (download?.requestId == requestId) {
+        val manager = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+        manager.remove(download.id)
+        clearPendingDownload(cancelled = true)
+        download.invoke.reject("Download cancelled")
+      } else if (waiting?.second?.requestId == requestId) {
+        history.record(requestId, true)
+        waitingPermission = null
+        waiting.first.reject("Download cancelled")
+      } else {
+        history.record(requestId, true)
+      }
+      invoke.resolve()
+    } catch (_: Exception) {
+      invoke.reject("Could not cancel download")
+    }
+  }
 
   override fun onResume() {
-    foreground = true
-    shareCompletedDownload()
+    checkDownload()
   }
 
   override fun onDestroy() {
-    destroyed = true
+    localPending?.operation?.cancel()
+    waitingPermission?.let {
+      history.record(it.second.requestId, true)
+      it.first.reject("Download cancelled")
+    }
+    waitingPermission = null
     pending?.invoke?.reject("Download continues in system Downloads. Open the file there when it finishes.")
     clearPendingDownload()
   }
 
-  private fun clearPendingDownload() {
+  private fun clearPendingDownload(cancelled: Boolean = false) {
+    pending?.let { history.record(it.requestId, cancelled) }
     if (receiverRegistered) {
       activity.unregisterReceiver(receiver)
       receiverRegistered = false
     }
+    handler.removeCallbacks(poll)
     pending = null
   }
 
-  private fun shareCompletedDownload() {
+  private fun checkDownload() {
     val download = pending ?: return
-    if (!foreground || activity.isFinishing || activity.isDestroyed) return
+    if (activity.isFinishing || activity.isDestroyed) return
     try {
       val manager = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+      var received = 0L
+      var total = -1L
       val status = manager.query(DownloadManager.Query().setFilterById(download.id)).use { cursor ->
         require(cursor != null && cursor.moveToFirst()) { "The download is no longer available" }
+        received = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR))
+        total = cursor.getLong(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_TOTAL_SIZE_BYTES))
         cursor.getInt(cursor.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
       }
-      require(status != DownloadManager.STATUS_FAILED) { "Download failed. Check your connection and available storage." }
+      if (received > 512L * 1024 * 1024 || total > 512L * 1024 * 1024) {
+        manager.remove(download.id)
+        error("File exceeds 512 MB")
+      }
+      val progress = JSObject().put("received", received).put("total", if (total > 0) total else org.json.JSONObject.NULL)
+        .put("state", if (status == DownloadManager.STATUS_PAUSED) "waiting" else "downloading")
+      try { download.progress?.send(progress) } catch (_: Exception) { }
+      require(status != DownloadManager.STATUS_FAILED) { "Download failed. Check your connection and available storage, then retry." }
       if (status != DownloadManager.STATUS_SUCCESSFUL) return
-      val uri = manager.getUriForDownloadedFile(download.id) ?: error("The downloaded file is unavailable")
-      val share = Intent(Intent.ACTION_SEND).setType(download.mime)
-        .putExtra(Intent.EXTRA_STREAM, uri)
-        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-      share.clipData = ClipData.newRawUri(download.name, uri)
-      activity.startActivity(Intent.createChooser(share, null))
+      require(total < 0 || total == received) { "The downloaded file is incomplete. Please retry." }
+      val receipt = SavedDownload.Managed(download.id, download.name, download.mime)
+      receipts[download.id.toString()] = receipt
       clearPendingDownload()
-      val result = JSObject()
-      result.put("status", "share_opened")
-      result.put("id", download.id)
-      download.invoke.resolve(result)
+      download.invoke.resolve(JSObject().put("status", "saved").put("id", download.id.toString()).put("name", download.name))
     } catch (error: Exception) {
       clearPendingDownload()
-      download.invoke.reject(error.message ?: "Could not share the downloaded file")
+      download.invoke.reject(error.message ?: "Could not complete the download")
     }
   }
 
-  private fun enqueue(invoke: Invoke) = activity.runOnUiThread {
-    if (pending != null || savingImage) {
+  @Command
+  fun open_download(invoke: Invoke) = activity.runOnUiThread {
+    try {
+      val id = invoke.parseArgs(ReceiptArgs::class.java).id
+      val receipt = receipts[id] ?: error("Download receipt expired. Open the file from system Downloads.")
+      val uri = when (receipt) {
+        is SavedDownload.Managed -> {
+          val manager = activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+          manager.getUriForDownloadedFile(receipt.downloadId) ?: error("The downloaded file was moved or removed")
+        }
+        is SavedDownload.Local -> Uri.parse(receipt.uri).also {
+          activity.contentResolver.openAssetFileDescriptor(it, "r")?.use { }
+            ?: error("The downloaded file was moved or removed")
+        }
+      }
+      val open = Intent(Intent.ACTION_VIEW).setDataAndType(uri, receipt.mime)
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+      open.clipData = ClipData.newRawUri(receipt.name, uri)
+      activity.startActivity(open)
+      invoke.resolve()
+    } catch (error: Exception) {
+      invoke.reject("Could not open this file. Use Downloads and choose an installed app. " + (error.message ?: ""))
+    }
+  }
+
+  @Command
+  fun reveal_download(invoke: Invoke) = activity.runOnUiThread {
+    try {
+      val id = invoke.parseArgs(ReceiptArgs::class.java).id
+      require(receipts.containsKey(id)) { "Download receipt expired" }
+      activity.startActivity(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS))
+      invoke.resolve()
+    } catch (error: Exception) {
+      invoke.reject("Could not open system Downloads. Open the phone's Files app and select Downloads.")
+    }
+  }
+
+  private fun enqueue(invoke: Invoke, args: DownloadArgs) {
+    if (pending != null) {
       invoke.reject("A download is already in progress")
-      return@runOnUiThread
+      return
     }
     try {
-      val args = invoke.parseArgs(DownloadArgs::class.java)
-      if (args.url.startsWith("data:")) {
-        require(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-          "Saving generated images requires Android 10 or newer"
-        }
-        saveImage(invoke, args)
-        return@runOnUiThread
-      }
+      history.check(args.requestId)
       val uri = Uri.parse(args.url)
       require(uri.scheme == "https" && uri.host != null && uri.userInfo == null) { "Downloads require an HTTPS URL" }
-      val name = args.name.replace('\\', '/').substringAfterLast('/').replace(Regex("[\\p{Cntrl}<>:\"|?*]"), "_").trim(' ', '.')
-      require(name.isNotEmpty()) { "Invalid filename" }
-      val dot = name.lastIndexOf('.')
-      val stem = if (dot > 0) name.substring(0, dot) else name
-      val extension = if (dot > 0) name.substring(dot) else ""
-      val destination = stem.take(60) + "-" + System.currentTimeMillis() + extension.take(20)
+      val name = safeName(args.name)
+      val destination = destinationName(name)
       val request = DownloadManager.Request(uri).setTitle(name).setMimeType(args.mime)
         .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
         .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, destination)
@@ -149,61 +247,79 @@ class FileDownloadPlugin(private val activity: Activity) : Plugin(activity) {
         activity.registerReceiver(receiver, filter)
       }
       receiverRegistered = true
-      pending = PendingDownload(manager.enqueue(request), name, args.mime, invoke)
-      shareCompletedDownload()
+      pending = PendingDownload(manager.enqueue(request), destination, args.mime, invoke, args.onProgress, args.requestId)
+      handler.post(poll)
     } catch (error: Exception) {
       clearPendingDownload()
+      history.record(args.requestId, false)
       invoke.reject(error.message ?: "Download failed")
     }
   }
 
-  private fun saveImage(invoke: Invoke, args: DownloadArgs) {
-    savingImage = true
-    val resolver = activity.applicationContext.contentResolver
+  private fun safeName(value: String): String {
+    val name = value.replace('\\', '/').substringAfterLast('/').replace(Regex("[\\p{Cntrl}<>:\"|?*]"), "_").trim(' ', '.')
+    require(name.isNotEmpty()) { "Invalid filename" }
+    return name
+  }
+
+  private fun destinationName(name: String): String {
+    val dot = name.lastIndexOf('.')
+    val stem = if (dot > 0) name.substring(0, dot) else name
+    val extension = if (dot > 0) name.substring(dot) else ""
+    return stem.take(60) + "-" + System.currentTimeMillis() + extension.take(20)
+  }
+
+  @android.annotation.TargetApi(29)
+  private fun saveLocalImage(invoke: Invoke, args: DownloadArgs) {
+    val name = destinationName(safeName(args.name))
+    val local = LocalDownload(invoke, args.requestId)
+    localPending = local
     try {
       Thread({
-        var uri: Uri? = null
+        var receipt: SavedDownload.Local? = null
         var failure: String? = null
-        var savedName = ""
         try {
           val image = LocalImageData.decode(args.url)
-          savedName = args.name.replace('\\', '/').substringAfterLast('/')
-            .replace(Regex("[\\p{Cntrl}<>:\"|?*]"), "_").trim(' ', '.').take(180)
-          require(savedName.isNotEmpty()) { "Invalid filename" }
-          check(!destroyed) { "Image export cancelled" }
-          val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, savedName)
-            put(MediaStore.Downloads.MIME_TYPE, image.mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
-            put(MediaStore.Downloads.IS_PENDING, 1)
-          }
-          val target = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: error("Could not create image in Downloads")
-          uri = target
-          resolver.openOutputStream(target)?.use { stream ->
-            for (offset in image.bytes.indices step (64 * 1024)) {
-              check(!destroyed) { "Image export cancelled" }
-              stream.write(image.bytes, offset, minOf(64 * 1024, image.bytes.size - offset))
+          var lastProgress = 0L
+          val saved = local.operation.save(image, {
+            MediaStoreImage.create(activity.applicationContext.contentResolver, name, image.mime)
+          }) { received, total ->
+            val now = SystemClock.elapsedRealtime()
+            if (received == 0L || received == total || now - lastProgress >= 100) {
+              lastProgress = now
+              handler.post {
+                if (localPending === local) {
+                  try {
+                    args.onProgress?.send(JSObject().put("received", received).put("total", total)
+                      .put("state", "downloading"))
+                  } catch (_: Exception) { }
+                }
+              }
             }
-          } ?: error("Could not write image")
-          check(!destroyed) { "Image export cancelled" }
-          check(resolver.update(target, ContentValues().apply {
-            put(MediaStore.Downloads.IS_PENDING, 0)
-          }, null, null) == 1) { "Could not finish saving image" }
+          }
+          receipt = SavedDownload.Local(saved.uri.toString(), name, image.mime)
         } catch (error: Exception) {
-          uri?.let { try { resolver.delete(it, null, null) } catch (_: Exception) {} }
-          uri = null
-          failure = error.message ?: "Could not save image"
+          failure = error.message ?: "Could not save local image"
         }
-        activity.runOnUiThread {
-          savingImage = false
-          if (uri == null) invoke.reject(failure ?: "Could not save image")
-          else invoke.resolve(JSObject().put("status", "saved").put("name", savedName))
+        val saved = receipt
+        val error = failure
+        handler.post {
+          history.record(local.requestId, local.operation.isCancelled())
+          localPending = null
+          if (saved != null) {
+            receipts[saved.id] = saved
+            local.invoke.resolve(JSObject().put("status", "saved").put("id", saved.id).put("name", saved.name))
+          } else local.invoke.reject(error ?: "Could not save local image")
+          for (cancellation in local.cancellations) {
+            if (error != null && error != "Download cancelled") cancellation.reject(error)
+            else cancellation.resolve()
+          }
         }
-      }, "baton-image-export").start()
+      }, "baton-local-image").start()
     } catch (error: Exception) {
-      savingImage = false
-      invoke.reject(error.message ?: "Could not start image export")
+      localPending = null
+      history.record(args.requestId, false)
+      throw error
     }
   }
 }
