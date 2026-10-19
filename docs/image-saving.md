@@ -38,8 +38,8 @@ limits. Browser HTTPS sources must allow a CORS read; they are read with a
 than silently navigating away. File URLs, arbitrary schemes and embedded URL
 credentials are rejected.
 
-The local save support and browser data-URL download handling are identical to
-the corresponding Mermaid export changes. Each contribution can be reviewed
+The native saving core, tests and browser download handling are identical across
+the Mermaid export, image saving and download queue contributions. Each contribution can be reviewed
 on its own; after either is merged, those shared changes need only be retained
 once.
 
@@ -65,3 +65,5 @@ file/share result, retry a failure, cancel where supported, and verify that the
 viewer gestures, close button and draft still work. Include cached images and
 HTTPS originals. Automated browser checks do not verify Downloads, MediaStore
 or the iOS share sheet.
+
+The shared native core includes cancellable image writes and saved receipts. A combined browser check with Mermaid export, the project queue and Android Back also preserves the original PNG bytes and the draft. This contribution keeps its own image controls; it does not import the queue or Mermaid UI. Native builds/device acceptance remain required.
