@@ -1,0 +1,16 @@
+.native-file-drop-hint {
+  position: fixed;
+  z-index: 1100;
+  left: 50%;
+  top: 64px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  padding: 10px 16px;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  color: #e6edf3;
+  background: #161b22;
+  pointer-events: none;
+  box-shadow: 0 4px 18px #0002;
+}
+.native-file-drop-hint[hidden] { display: none; }

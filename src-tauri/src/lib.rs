@@ -1,6 +1,8 @@
 // Multi-window is macOS-only. Windows/Linux are intentionally left single-window
 // (title_bar_style/hidden_title below are macOS-only builder methods anyway).
 mod preview_proxy;
+#[cfg(target_os = "macos")]
+mod macos_drop;
 
 #[cfg(target_os = "macos")]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -51,14 +53,15 @@ fn spawn_peek_window(app: &tauri::AppHandle) {
     .position(120.0 + offset, 120.0 + offset)
     .build();
 
-  if let Err(e) = res {
-    log::error!("failed to create window {}: {}", label, e);
+  match res {
+    Ok(window) => macos_drop::configure_window(&window),
+    Err(e) => log::error!("failed to create window {}: {}", label, e),
   }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-  tauri::Builder::default()
+  let builder = tauri::Builder::default()
     .plugin(tauri_plugin_opener::init())
     .plugin(tauri_plugin_in_app_browser::init())
     .plugin(tauri_plugin_file_download::init())
@@ -66,8 +69,24 @@ pub fn run() {
     .plugin(tauri::plugin::Builder::<_, ()>::new("browser-frame")
       .js_init_script_on_all_frames(include_str!("../../web/js/browser/frame-bridge.js"))
       .build())
-    .manage(std::sync::Arc::new(preview_proxy::PreviewProxy::default()))
-    .invoke_handler(tauri::generate_handler![
+    .manage(std::sync::Arc::new(preview_proxy::PreviewProxy::default()));
+  #[cfg(target_os = "macos")]
+  let builder = builder.invoke_handler(tauri::generate_handler![
+    ios_build_number,
+    preview_proxy::preview_start,
+    preview_proxy::preview_credit,
+    preview_proxy::preview_write,
+    preview_proxy::preview_shutdown_write,
+    preview_proxy::preview_close_socket,
+    preview_proxy::preview_stop,
+    preview_proxy::preview_reset,
+    macos_drop::macos_drop_claim,
+    macos_drop::macos_drop_read_image,
+    macos_drop::macos_drop_upload,
+    macos_drop::macos_drop_release
+  ]);
+  #[cfg(not(target_os = "macos"))]
+  let builder = builder.invoke_handler(tauri::generate_handler![
       ios_build_number,
       preview_proxy::preview_start,
       preview_proxy::preview_credit,
@@ -76,7 +95,8 @@ pub fn run() {
       preview_proxy::preview_close_socket,
       preview_proxy::preview_stop,
       preview_proxy::preview_reset
-    ])
+    ]);
+  builder
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(
@@ -99,6 +119,11 @@ pub fn run() {
       #[cfg(target_os = "macos")]
       {
         use tauri::menu::{Menu, MenuItemBuilder};
+        use tauri::Manager;
+
+        for window in app.webview_windows().values() {
+          macos_drop::configure_window(window);
+        }
 
         let menu = Menu::default(app.handle())?;
 
