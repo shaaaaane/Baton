@@ -1,4 +1,5 @@
 import WebSocket from 'ws';
+import { handleGoalControls, GOAL_CONTROL_COMMAND } from './goal-controls.mjs';
 import { resolveBridgeAttachments } from './attachments.mjs';
 import fs from 'fs';
 import path from 'path';
@@ -1267,6 +1268,7 @@ function createStreamCallbacks(sessionId, turnId, cwd, ack, options = {}) {
   const liveTurn = new Stream({
     sessionId,
     turnId,
+    goalContinuation: options.goalContinuation,
     replyConnectionId: options.replyConnectionId,
     send: wsSendWhenConnected,
     onSegment: (id, segment) => {
@@ -1974,6 +1976,20 @@ async function handleListCommandOptions(msg) {
     sessionId = '',
     commandName = '',
   } = msg;
+  if (commandName === GOAL_CONTROL_COMMAND) {
+    let cwd = process.cwd();
+    try { if (typeof projectHash === 'string' && projectHash) cwd = projectHashToPath(projectHash) || cwd; }
+    catch {}
+    cwd = path.resolve(cwd);
+    await handleGoalControls(msg, {
+      codex: getRuntimeAdapter('codex').interaction, cwd, send: wsSend,
+      goalCallbacks: turnId => createStreamCallbacks(sessionId, turnId, cwd, () => {}, {
+        runtime: 'codex', nativeSessionId: sessionId.slice(6), userInitiated: false,
+        goalContinuation: true,
+      }),
+    });
+    return;
+  }
   let options = [];
   let error = '';
   try {
