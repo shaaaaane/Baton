@@ -526,7 +526,7 @@ test('the shared download button invokes the native download plugin with the ori
   assert.equal(document.getElementById('file-download-btn').classList.contains('is-downloading'), false);
 });
 
-test('mobile browser downloads attempt sharing and reuse Download when fresh activation is required', async () => {
+test('mobile browser downloads prepare a file and share it from a fresh button gesture', async () => {
   const shared = [];
   let attempts = 0;
   Object.defineProperty(navigator, 'userAgent', { configurable: true, value: 'iPhone' });
@@ -539,9 +539,12 @@ test('mobile browser downloads attempt sharing and reuse Download when fresh act
   window.openFile('baton-file:' + key, 'deck.pptx');
   await window.downloadViewedFile();
   assert.equal(shared.length, 0);
-  assert.equal(attempts, 1);
+  assert.equal(attempts, 0);
   assert.equal(document.getElementById('file-share-btn'), null);
-  assert.match(document.getElementById('file-download-status').textContent, /Tap Download again/);
+  assert.match(document.getElementById('file-download-status').textContent, /Tap Share/);
+  await window.downloadViewedFile();
+  assert.equal(attempts, 1);
+  assert.equal(shared.length, 0);
   await window.downloadViewedFile();
   assert.equal(shared.length, 1);
   assert.equal(shared[0].files[0].name, 'deck.pptx');
