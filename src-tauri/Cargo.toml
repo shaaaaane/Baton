@@ -44,3 +44,4 @@ objc2-foundation = { version = "0.3", default-features = false, features = ["std
 
 [target."cfg(target_os = \"macos\")".dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["native-tls", "blocking"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSProcessInfo"] }

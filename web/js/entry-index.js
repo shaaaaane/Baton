@@ -33,6 +33,7 @@ import { initImageSaveControls } from './components/image-save.js';
 import { initSystemBack } from './system-back.js';
 import '../css/file-drop.css';
 import { initMacosFileDrop } from './file-drop.js';
+import { initMacosZoom } from './macos-zoom.js';
 
 initMessageQuotes();
 initCodeCopy();
@@ -42,6 +43,7 @@ initModePanel();
 initImageSaveControls();
 initSystemBack();
 initMacosFileDrop();
+initMacosZoom();
 
 // Replay any clicks queued by the inline shell before app.js was ready.
 if (Array.isArray(window.__navQueue)) {
