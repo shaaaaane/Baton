@@ -1,4 +1,5 @@
 const ZOOM_KEY = 'baton-macos-zoom';
+const ZOOM_LEVELS = [0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
 let controller;
 
 export function isNativeMac(win) {
@@ -10,7 +11,9 @@ export function isNativeMac(win) {
 export function normalizeZoom(value) {
   const number = Number(value);
   if (!Number.isFinite(number) || number <= 0) return 1;
-  return Math.max(0.75, Math.min(2, Math.round(number * 100) / 100));
+  const bounded = Math.max(0.75, Math.min(2, number));
+  return ZOOM_LEVELS.reduce((nearest, level) =>
+    Math.abs(level - bounded) < Math.abs(nearest - bounded) ? level : nearest);
 }
 
 export function zoomShortcut(event) {
@@ -51,7 +54,8 @@ export function createZoomController(win, invoke) {
 
   function changeZoom(action) {
     if (!['in', 'out', 'reset'].includes(action)) return queue;
-    return apply(action === 'reset' ? 1 : zoom + (action === 'in' ? 0.1 : -0.1));
+    const index = ZOOM_LEVELS.indexOf(zoom) + (action === 'in' ? 1 : -1);
+    return apply(action === 'reset' ? 1 : ZOOM_LEVELS[Math.max(0, Math.min(ZOOM_LEVELS.length - 1, index))]);
   }
 
   function keydown(event) {
@@ -86,6 +90,7 @@ export function createZoomController(win, invoke) {
 export function initMacosZoom(win = window) {
   if (!isNativeMac(win)) return null;
   if (!controller) {
+    win.document.documentElement.classList.add('macos-page-zoom');
     const native = import('@tauri-apps/api/core');
     controller = createZoomController(win, (command, args) =>
       native.then(({ invoke }) => invoke(command, args)));

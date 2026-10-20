@@ -236,6 +236,7 @@ test('typing preserves message scroll without refreshing the streaming spinner',
   const input = h.document.getElementById('msg-input');
   const originalSpinner = h.window.updateSpinner;
   let spinnerUpdates = 0;
+  let inputHeight = 44;
   globalThis.updateSpinner = h.window.updateSpinner = () => { spinnerUpdates += 1; };
 
   let clientHeight = 300;
@@ -252,7 +253,7 @@ test('typing preserves message scroll without refreshing the streaming spinner',
   });
   Object.defineProperty(input, 'scrollHeight', {
     configurable: true,
-    get: () => 44,
+    get: () => inputHeight,
   });
   t.after(() => {
     globalThis.updateSpinner = h.window.updateSpinner = originalSpinner;
@@ -260,6 +261,7 @@ test('typing preserves message scroll without refreshing the streaming spinner',
     delete content.scrollHeight;
     delete content.scrollTop;
     delete input.scrollHeight;
+    h.document.documentElement.classList.remove('macos-page-zoom');
   });
 
   h.state.wsRunning = true;
@@ -269,6 +271,20 @@ test('typing preserves message scroll without refreshing the streaming spinner',
   await h.tick(10);
 
   assert.equal(input.style.height, '44px');
+  assert.equal(content.scrollTop, 180);
+  assert.equal(spinnerUpdates, 0);
+
+  input.setSelectionRange(1, 1);
+  inputHeight = 64;
+  h.window.dispatchEvent(new h.window.Event('resize'));
+  await h.tick(10);
+  assert.equal(input.style.height, '44px');
+  h.document.documentElement.classList.add('macos-page-zoom');
+  h.window.dispatchEvent(new h.window.Event('resize'));
+  await h.tick(10);
+  assert.equal(input.style.height, '65px');
+  assert.equal(input.value, 'a');
+  assert.equal(input.selectionStart, 1);
   assert.equal(content.scrollTop, 180);
   assert.equal(spinnerUpdates, 0);
 

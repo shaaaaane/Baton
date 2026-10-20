@@ -60,12 +60,12 @@ test('Cmd zoom works in composer and terminal, leaving other editing/control com
     let terminalKeys = 0;
     terminal.addEventListener('keydown', () => terminalKeys++);
     await controller.settled();
-    assert.deepEqual(calls[0], ['macos_set_zoom', { scale: 1.2 }]);
+    assert.deepEqual(calls[0], ['macos_set_zoom', { scale: 1.25 }]);
     assert.equal(key(win, composer, '=').defaultPrevented, true);
     assert.equal(key(win, terminal, '+', { shiftKey: true }).defaultPrevented, true);
     assert.equal(key(win, terminal, '-').defaultPrevented, true);
     await controller.settled();
-    assert.deepEqual(calls.slice(1).map(([, args]) => args.scale), [1.3, 1.4, 1.3]);
+    assert.deepEqual(calls.slice(1).map(([, args]) => args.scale), [1.5, 1.75, 1.5]);
     assert.equal(terminalKeys, 0);
     for (const [character, modifiers] of [
       ['-', { metaKey: false, ctrlKey: true }],
@@ -87,6 +87,32 @@ test('Cmd zoom works in composer and terminal, leaving other editing/control com
   } finally { controller.dispose(); dom.window.close(); }
 });
 
+test('zoom uses fixed levels and restores the nearest level for old preferences', async () => {
+  const levels = [0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2];
+  const { dom, calls, controller } = fixture('0.75');
+  try {
+    await controller.settled();
+    for (let i = 1; i < levels.length; i++) controller.changeZoom('in');
+    await controller.settled();
+    assert.deepEqual(calls.map(([, args]) => args.scale), levels);
+    await controller.changeZoom('in');
+    assert.equal(calls.at(-1)[1].scale, 2);
+    const start = calls.length;
+    for (let i = 1; i < levels.length; i++) controller.changeZoom('out');
+    await controller.settled();
+    assert.deepEqual(calls.slice(start).map(([, args]) => args.scale), levels.slice(0, -1).reverse());
+    await controller.changeZoom('out');
+    assert.equal(calls.at(-1)[1].scale, 0.75);
+    await controller.changeZoom('reset');
+    assert.equal(calls.at(-1)[1].scale, 1);
+    assert.equal(macos.normalizeZoom('1.2'), 1.25);
+    assert.equal(macos.normalizeZoom('1.3'), 1.25);
+    assert.equal(macos.normalizeZoom('1.4'), 1.5);
+    assert.equal(macos.normalizeZoom(Number.MAX_VALUE), 2);
+    assert.equal(macos.normalizeZoom('0.01'), 0.75);
+  } finally { controller.dispose(); dom.window.close(); }
+});
+
 test('zoom is bounded and malformed preferences recover; storage updates do not echo writes', async () => {
   assert.equal(macos.normalizeZoom('invalid'), 1);
   assert.equal(macos.normalizeZoom(null), 1);
@@ -99,10 +125,10 @@ test('zoom is bounded and malformed preferences recover; storage updates do not 
     await controller.settled();
     assert.equal(calls.at(-1)[1].scale, 0.75);
     dom.window.dispatchEvent(new dom.window.StorageEvent('storage', {
-      key: 'baton-macos-zoom', newValue: '1.5',
+      key: 'baton-macos-zoom', newValue: '1.3',
     }));
     await controller.settled();
-    assert.equal(calls.at(-1)[1].scale, 1.5);
+    assert.equal(calls.at(-1)[1].scale, 1.25);
     assert.equal(dom.window.localStorage.getItem('baton-macos-zoom'), '0.75');
     dom.window.dispatchEvent(new dom.window.StorageEvent('storage', { key: null }));
     await controller.settled();
