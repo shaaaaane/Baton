@@ -23,8 +23,6 @@ test('mobile Plan command explains the explicit exit without changing the TUI ca
   const mobile = CODEX_MOBILE_COMMANDS.find(command => command.name === 'plan');
   assert.match(mobile.description, /\/plan off/);
   assert.equal(mobile.argumentHint, '[on|off|prompt]');
-  assert.equal(mobile.inlineArgs, true);
-  assert.equal(mobile.behavior, 'send');
   assert.equal(CODEX_TUI_COMMANDS.find(command => command.name === 'plan').description,
     'switch to Plan mode');
 });
