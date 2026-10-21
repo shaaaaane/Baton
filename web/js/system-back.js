@@ -1,3 +1,4 @@
+import { onBackButtonPress } from '@tauri-apps/api/app';
 import { dismissActiveBackLayer } from './edge-back.js';
 
 function visible(element) {
@@ -18,7 +19,7 @@ export function handleSystemBack(navigate = () => window.navigateUp?.() === true
   const overlay = [...document.querySelectorAll('.modal-overlay, .img-overlay')]
     .filter(visible).at(-1);
   if (overlay) {
-    const close = overlay.querySelector('.cancel, .img-overlay-close, .agent-threads-close');
+    const close = overlay.querySelector('.cancel, .img-overlay-close');
     if (close && !close.disabled) close.click();
     else if (!close) overlay.click();
     return true;
@@ -32,12 +33,11 @@ export function handleSystemBack(navigate = () => window.navigateUp?.() === true
   return navigate() === true;
 }
 
+// Tauri keeps plugin listeners across page loads, so every page must register its own.
 export function initSystemBack({ navigate } = {}) {
-  const handler = () => handleSystemBack(navigate);
-  window.__batonHandleSystemBack = handler;
-  return () => {
-    if (window.__batonHandleSystemBack === handler) {
-      delete window.__batonHandleSystemBack;
-    }
-  };
+  const android = window.BatonAndroid;
+  if (!android) return Promise.resolve(null);
+  return onBackButtonPress(() => {
+    if (!handleSystemBack(navigate)) android.moveTaskToBack();
+  }).catch(() => null);
 }
