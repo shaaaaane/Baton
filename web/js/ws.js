@@ -55,6 +55,7 @@ var _strictStreamRenderer = null;
 var _checkpointResumedTurns = new Set();
 var _queuedTurnIds = new Set();
 var _activeExecutionIds = new Set();
+var _goalContinuationIds = new Set();
 var _executionEvents = new ExecutionEventQueue();
 var _executionRecoveryTimers = new Map();
 var _wsReconnectTimer = null;
@@ -599,6 +600,9 @@ function drainPreAdoptionTurnEvents(sessionId, turnId) {
 
 function routeTurnEvent(message) {
   if (bufferPreAdoptionTurnEvent(message)) return;
+  if (message.goalContinuation === true && message.sessionId === state.wsSessionId) {
+    _goalContinuationIds.add(message.turnId);
+  }
   var barrier = _historyFetchBarriers.current(message.sessionId);
   if (barrier && message.sessionId === barrier.sessionId
     && (isStrictTurnEvent(message) || message.action === 'messages')) {
@@ -748,7 +752,7 @@ function handleGappedTurnCompletion(completion) {
 function resumeLateJoinAtCheckpoint(turnId) {
   var recovery = _turnEventQueue.resumeAtNextCheckpoint(turnId);
   if (!recovery) return false;
-  if (!document.querySelector('[data-anchor="' + turnId + '"]')) {
+  if (!_goalContinuationIds.has(turnId) && !document.querySelector('[data-anchor="' + turnId + '"]')) {
     var hasLoadedUser = !!document.querySelector('.messages > .msg-user');
     console.warn(
       hasLoadedUser
@@ -1026,8 +1030,8 @@ function getStrictStreamRenderer() {
         ? document.querySelector('[data-anchor="' + turnId + '"]:not([hidden])')
         : null;
     },
-    canAppendWithoutAnchor: function (container) {
-      return !container?.querySelector(':scope > .msg-user');
+    canAppendWithoutAnchor: function (container, turnId) {
+      return _goalContinuationIds.has(turnId) || !container?.querySelector(':scope > .msg-user');
     },
     renderMarkdown: function (element, text) {
       if (window.renderStreamMd) window.renderStreamMd(element, text);
@@ -1342,6 +1346,7 @@ function handleStrictTurnEnd(message) {
   }
   _streamCoordinator.endTurn(message);
   drainStrictStreamOperations();
+  _goalContinuationIds.delete(message.turnId);
   _turnEventQueue.closeTurn(message.turnId);
   _queuedTurnIds.delete(message.turnId);
   _checkpointResumedTurns.delete(message.turnId);
@@ -1532,6 +1537,7 @@ function resetStreamSessionState(keepHistoryRequest = false) {
   _checkpointResumedTurns.clear();
   _queuedTurnIds.clear();
   _activeExecutionIds.clear();
+  _goalContinuationIds.clear();
   _executionEvents.reset();
   for (var timer of _executionRecoveryTimers.values()) clearTimeout(timer);
   _executionRecoveryTimers.clear();
@@ -2254,7 +2260,7 @@ function handleCodexClientCommand(text, input) {
   return true;
 }
 
-// Textarea: Enter sends, Shift+Enter newline, auto-grow, toggle send/stop button
+// Textarea: mobile Enter/desktop Shift+Enter newline, desktop Enter sends, auto-grow.
 var _stopSvg = '<svg viewBox="0 0 24 24" width="18" height="18"><rect x="4" y="4" width="16" height="16" rx="3" fill="currentColor"/></svg>';
 var _sendSvg = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>';
 function updateSendBtn(options) {
@@ -2363,7 +2369,9 @@ var restoreScrollFrame = null;
 
     el.style.height = 'auto';
     var measuredHeight = el.scrollHeight;
-    if (measuredHeight > 0) el.style.height = measuredHeight + 'px';
+    // scrollHeight is rounded; leave room for a fractional line at page zoom.
+    var padding = document.documentElement.classList.contains('macos-page-zoom') ? 1 : 0;
+    if (measuredHeight > 0) el.style.height = (measuredHeight + padding) + 'px';
 
     if (!preserveScroll) return;
     var restoreScroll = function () {
@@ -2381,6 +2389,8 @@ var restoreScrollFrame = null;
     // IME composition: Enter confirms the candidate, not a send. Sending here
     // clears the input, then compositionend re-fills it → duplicate send + leftover text.
     if (e.isComposing || e.keyCode === 229) return;
+    // Mobile return inserts a newline; sending uses the explicit button.
+    if (/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) return;
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); updateSendBtn(); }
   });
   el.addEventListener('input', function () {
@@ -2389,6 +2399,12 @@ var restoreScrollFrame = null;
     // spinner through the existing no-argument updateSendBtn() calls.
     updateSendBtn({ skipSpinner: true });
   });
+  window.addEventListener('resize', function () {
+    if (document.documentElement.classList.contains('macos-page-zoom')) {
+      requestAnimationFrame(resizeInputPreservingMessages);
+    }
+  });
+  if (document.documentElement.classList.contains('macos-page-zoom')) resizeInputPreservingMessages();
 })();
 // Global Esc → interrupt the running turn, like CC. Bubble phase so overlays
 // that own Esc (slash popup handles it in capture phase; file/image viewers
